@@ -15,7 +15,10 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'io.papermc.paper:paper-api:26.1.2.build.+'
+    // Compile against the SUPPORT FLOOR (MC 1.21) so we can't accidentally use API newer than the
+    // oldest server we target. PacketEvents handles the protocol across the whole 1.21 -> 26.1 range
+    // at runtime, and a plugin built against 1.21 still loads on newer servers.
+    compileOnly 'io.papermc.paper:paper-api:1.21-R0.1-SNAPSHOT'
     compileOnly 'com.github.retrooper:packetevents-spigot:2.12.2'
 
     // --- testing stack (latest stable supporting Java 21+ / Paper) ---
@@ -24,18 +27,22 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'org.assertj:assertj-core:3.27.3'
     testImplementation 'org.mockito:mockito-core:5.23.0'
-    // MockBukkit's v1.21 module is Java 21-compatible, so the same suite runs on both Java 21 and 25.
-    // It downloads the real Paper server at runtime; paper-api is still needed on the test classpath
-    // for compilation (pinned within the 1.21 line that this module targets).
+    // MockBukkit's v1.21 module is Java 21-compatible, so the same suite runs on both Java 21 and 25
+    // in CI. It downloads the real Paper server at runtime; paper-api is still needed on the test
+    // classpath for compilation (pinned within the 1.21 line that this module targets).
     testImplementation 'org.mockbukkit.mockbukkit:mockbukkit-v1.21:4.110.0'
     testImplementation 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
 }
 
-def targetJavaVersion = 25
-java {
-    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
-    sourceCompatibility = javaVersion
-    targetCompatibility = javaVersion
+// Production targets Java 21: MC 1.21 servers run on Java 21, and a Java 21 artifact also runs on
+// newer (Java 25) servers, so this one build covers the entire 1.21 -> 26.1 range. `release` pins the
+// Java 21 API surface so a JDK 25 toolchain can't slip in newer standard-library calls.
+//
+// The test source set deliberately stays on the build's JDK (25): the Paper 26.1.2 ceiling exercised
+// by MockBukkit is only compatible with Java 25, so tests verify the 21-compiled plugin on the
+// newest runtime.
+tasks.named('compileJava') {
+    options.release = 21
 }
 
 test {
