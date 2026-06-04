@@ -31,6 +31,13 @@ Similarly adds support for FlexibleBlockPlacement from Tweakeroo and easyPlace f
 
 The compiled JAR will be in `build/libs/`
 
+### Testing
+```
+./gradlew test
+```
+
+See [TESTING.md](TESTING.md) for the testing stack, conventions, and how to run individual tests.
+
 ## Configuration advice for Clients
 
 ### For Litematica

@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
     id 'com.gradleup.shadow' version '8.3.9'
 }
 
@@ -14,11 +15,20 @@ repositories {
 }
 
 dependencies {
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
-    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
-
     compileOnly 'io.papermc.paper:paper-api:26.1.2.build.+'
     compileOnly 'com.github.retrooper:packetevents-spigot:2.12.2'
+
+    // --- testing stack (latest stable supporting Java 21+ / Paper) ---
+    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.assertj:assertj-core:3.27.3'
+    testImplementation 'org.mockito:mockito-core:5.23.0'
+    // MockBukkit's v1.21 module is Java 21-compatible, so the same suite runs on both Java 21 and 25.
+    // It downloads the real Paper server at runtime; paper-api is still needed on the test classpath
+    // for compilation (pinned within the 1.21 line that this module targets).
+    testImplementation 'org.mockbukkit.mockbukkit:mockbukkit-v1.21:4.110.0'
+    testImplementation 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
 }
 
 def targetJavaVersion = 25
@@ -30,6 +40,29 @@ java {
 
 test {
     useJUnitPlatform()
+    // EnableDynamicAgentLoading: lets Mockito/byte-buddy self-attach on modern JDKs.
+    // bytebuddy.experimental: allows byte-buddy to run on a JDK newer than it officially targets.
+    jvmArgs(
+            '-XX:+EnableDynamicAgentLoading',
+            '-Dnet.bytebuddy.experimental=true'
+    )
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+    finalizedBy jacocoTestReport
+}
+
+jacoco {
+    toolVersion = '0.8.14' // first version with official Java 25 support
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = true
+    }
 }
 
 shadowJar {
