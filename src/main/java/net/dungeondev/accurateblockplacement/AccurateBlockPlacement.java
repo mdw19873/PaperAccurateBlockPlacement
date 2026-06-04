@@ -32,6 +32,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -51,6 +52,10 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	private BlockPlacementProtocol protocol;
 
 	private final Map<UUID, PacketData> playerPacketDataHashMap = new ConcurrentHashMap<>();
+
+	// players we have already answered the carpet:hello handshake for, so a client cannot
+	// spam the channel to make the server repeatedly build and send rule packets.
+	private final Set<UUID> carpetGreeted = ConcurrentHashMap.newKeySet();
 
 	@Override
 	public void onLoad() {
@@ -91,6 +96,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	@Override
 	public void onDisable() {
 		playerPacketDataHashMap.clear();
+		carpetGreeted.clear();
 
 		if (PacketEvents.getAPI() != null) {
 			PacketEvents.getAPI().terminate();
@@ -148,7 +154,9 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 	@EventHandler
 	public void onPlayerQuit(PlayerQuitEvent event) {
-		playerPacketDataHashMap.remove(event.getPlayer().getUniqueId());
+		UUID uuid = event.getPlayer().getUniqueId();
+		playerPacketDataHashMap.remove(uuid);
+		carpetGreeted.remove(uuid);
 	}
 
 	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -266,7 +274,9 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				}
 			}
 		} catch (Exception e) {
-			getLogger().warning("Error processing block placement packet: " + e.getMessage());
+			// debug-level so a client cannot flood the log by sending malformed packets;
+			// the packet is simply skipped either way
+			debug("Error processing block placement packet: " + e.getMessage());
 			if (debugEnabled) {
 				e.printStackTrace();
 			}
@@ -276,8 +286,13 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	private void onCustomPayload(final PacketReceiveEvent event) {
 		try {
 			WrapperPlayClientPluginMessage in = new WrapperPlayClientPluginMessage(event);
-			// only answer the carpet handshake channel
-			if (CarpetPayloads.CHANNEL.equals(in.getChannelName())) {
+			if (!CarpetPayloads.CHANNEL.equals(in.getChannelName())) {
+				return;
+			}
+			// answer the handshake only once per player; carpetGreeted.add() is true only the
+			// first time, so a client spamming the channel cannot trigger repeated responses
+			UUID uuid = event.getUser().getUUID();
+			if (uuid != null && carpetGreeted.add(uuid)) {
 				sendCarpetRules(event.getPlayer());
 			}
 		} catch (Exception ignored) { // honestly don't mind ignoring this one

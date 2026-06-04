@@ -33,6 +33,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Verify gradle-wrapper.jar matches a known-good Gradle release (supply-chain check).
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
       - name: Set up JDK ${{ matrix.java }}
         uses: actions/setup-java@v5
         with:
