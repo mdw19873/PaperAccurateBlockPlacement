@@ -6,7 +6,7 @@ author: hxrry27 (forked from DungeonDev)
 api-version: 26.1
 dependencies:
   server:
-    ProtocolLib:
+    packetevents:
       required: true
 
 commands:

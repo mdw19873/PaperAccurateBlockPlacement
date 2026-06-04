@@ -10,15 +10,15 @@ repositories {
     mavenCentral()
     maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
     maven { url 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url 'https://repo.codemc.io/repository/maven-releases/' }
 }
 
 dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.0'
-    
+
     compileOnly 'io.papermc.paper:paper-api:26.1.2.build.+'
-    compileOnly group: 'io.netty', name: 'netty-all', version: '4.2.10.Final'
-    compileOnly group: "net.dmulloy2", name: "ProtocolLib", version: "5.4.0"
+    compileOnly 'com.github.retrooper:packetevents-spigot:2.12.2'
 }
 
 def targetJavaVersion = 25

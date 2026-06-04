@@ -1,19 +1,16 @@
 package net.dungeondev.accurateblockplacement;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.ProtocolLibrary;
-import com.comphenix.protocol.ProtocolManager;
-import com.comphenix.protocol.events.ListenerPriority;
-import com.comphenix.protocol.events.PacketAdapter;
-import com.comphenix.protocol.events.PacketContainer;
-import com.comphenix.protocol.events.PacketEvent;
-import com.comphenix.protocol.utility.MinecraftReflection;
-import com.comphenix.protocol.utility.StreamSerializer;
-import com.comphenix.protocol.wrappers.BlockPosition;
-import com.comphenix.protocol.wrappers.MovingObjectPositionBlock;
-import com.comphenix.protocol.wrappers.nbt.NbtCompound;
-import com.comphenix.protocol.wrappers.nbt.NbtFactory;
-import io.netty.buffer.Unpooled;
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.event.PacketListenerAbstract;
+import com.github.retrooper.packetevents.event.PacketListenerPriority;
+import com.github.retrooper.packetevents.event.PacketReceiveEvent;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.util.Vector3f;
+import com.github.retrooper.packetevents.util.Vector3i;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerBlockPlacement;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPluginMessage;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPluginMessage;
+import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import org.bukkit.Axis;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -38,45 +35,59 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AccurateBlockPlacement extends JavaPlugin implements Listener {
-	private ProtocolManager protocolManager;
 	private FileConfiguration config;
 
 	private final Map<Player, PacketData> playerPacketDataHashMap = new ConcurrentHashMap<>();
 
 	@Override
+	public void onLoad() {
+		// PacketEvents must be set up and loaded as early as possible (onLoad),
+		// then init()'d in onEnable. Listeners are registered after load().
+		PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
+		PacketEvents.getAPI().load();
+
+		PacketEvents.getAPI().getEventManager().registerListener(
+				new PacketListenerAbstract(PacketListenerPriority.LOWEST) {
+					@Override
+					public void onPacketReceive(PacketReceiveEvent event) {
+						if (event.getPacketType() == PacketType.Play.Client.PLAYER_BLOCK_PLACEMENT) {
+							onBlockBuildPacket(event);
+						}
+					}
+				});
+
+		PacketEvents.getAPI().getEventManager().registerListener(
+				new PacketListenerAbstract(PacketListenerPriority.NORMAL) {
+					@Override
+					public void onPacketReceive(PacketReceiveEvent event) {
+						if (event.getPacketType() == PacketType.Play.Client.PLUGIN_MESSAGE) {
+							onCustomPayload(event);
+						}
+					}
+				});
+	}
+
+	@Override
 	public void onEnable() {
+		PacketEvents.getAPI().init();
 
 		saveDefaultConfig();
 		config = getConfig();
 
 		getLogger().info("PaperAccurateBlockPlacement loaded!");
-		protocolManager = ProtocolLibrary.getProtocolManager();
 
-		protocolManager.addPacketListener(
-				new PacketAdapter(this, ListenerPriority.LOWEST, PacketType.Play.Client.USE_ITEM_ON) {
-					@Override
-					public void onPacketReceiving(final PacketEvent event) {
-						onBlockBuildPacket(event);
-					}
-				});
-		protocolManager.addPacketListener(
-				new PacketAdapter(this, ListenerPriority.NORMAL, PacketType.Play.Client.CUSTOM_PAYLOAD) {
-					@Override
-					public void onPacketReceiving(final PacketEvent event) {
-						onCustomPayload(event);
-					}
-				});
 		getServer().getPluginManager().registerEvents(this, this);
 	}
 
@@ -95,8 +106,8 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	public void onDisable() {
 		playerPacketDataHashMap.clear();
 
-		if (protocolManager != null) {
-			protocolManager.removePacketListeners(this);
+		if (PacketEvents.getAPI() != null) {
+			PacketEvents.getAPI().terminate();
 		}
 	}
 
@@ -131,23 +142,18 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	@EventHandler
 	public void onPlayerJoin(PlayerJoinEvent event) {
 		try {
-			PacketContainer packet = new PacketContainer(PacketType.Play.Server.CUSTOM_PAYLOAD);
+			// Carpet "hello" handshake body: VarInt(version) + protocol identifier string.
+			// The channel name ("carpet:hello") is a first-class field of the wrapper.
+			ByteArrayOutputStream body = new ByteArrayOutputStream();
+			DataOutputStream dos = new DataOutputStream(body);
 
-			// constructing entire payload
-			ByteArrayOutputStream fullPayload = new ByteArrayOutputStream();
-			DataOutputStream dos = new DataOutputStream(fullPayload);
-
-			StreamSerializer.getDefault().serializeString(dos, "carpet:hello");
-
-			StreamSerializer.getDefault().serializeVarInt(dos, 69);
-			StreamSerializer.getDefault().serializeString(dos, "PAPER-ABP");
-
+			writeVarInt(dos, 69);
+			writeMcString(dos, "PAPER-ABP");
 			dos.flush();
 
-			packet.getModifier().write(0, MinecraftReflection.getPacketDataSerializer(
-					Unpooled.wrappedBuffer(fullPayload.toByteArray())));
-
-			protocolManager.sendServerPacket(event.getPlayer(), packet);
+			WrapperPlayServerPluginMessage packet =
+					new WrapperPlayServerPluginMessage("carpet:hello", body.toByteArray());
+			PacketEvents.getAPI().getPlayerManager().sendPacket(event.getPlayer(), packet);
 		} catch (Exception e) {
 			debug("Failed to send carpet hello packet to " + event.getPlayer().getName() + ": " + e.getMessage());
 		}
@@ -167,7 +173,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			return;
 		}
 
-		BlockPosition packetBlock = packetData.block();
+		Vector3i packetBlock = packetData.block();
 		Block block = event.getBlock();
 		Block clickedBlock = event.getBlockAgainst();
 
@@ -434,21 +440,17 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		}
 	}
 
-	private void onBlockBuildPacket(final PacketEvent event) {
+	private void onBlockBuildPacket(final PacketReceiveEvent event) {
 		Player player = event.getPlayer();
-		PacketContainer packet = event.getPacket();
 
 		try {
-			if (!packet.getType().equals(PacketType.Play.Client.USE_ITEM_ON)) {
-				return;
-			}
+			WrapperPlayClientPlayerBlockPlacement wrapper = new WrapperPlayClientPlayerBlockPlacement(event);
+			Vector3i blockPosition = wrapper.getBlockPosition();
+			Vector3f cursor = wrapper.getCursorPosition();
 
-			MovingObjectPositionBlock clickInformation = packet.getMovingBlockPositions().read(0);
-			BlockPosition blockPosition = clickInformation.getBlockPosition();
-			Vector posVector = clickInformation.getPosVector();
-
-			double originalX = posVector.getX();
-			double relativeX = originalX - blockPosition.getX();
+			// Unlike ProtocolLib (which exposes an absolute pos vector), PacketEvents gives the
+			// raw block-relative cursor float directly - exactly what Carpet encodes into.
+			float relativeX = cursor.getX();
 
 			if (relativeX >= 2) {
 				// tweakeroo sends (value * 2) + 2, so we reverse it
@@ -456,58 +458,81 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 				playerPacketDataHashMap.put(player, new PacketData(blockPosition, protocolValue));
 
-				// fix X to valid position
-				posVector.setX(blockPosition.getX() + 0.5);
-				clickInformation.setPosVector(posVector);
-				packet.getMovingBlockPositions().write(0, clickInformation);
+				// fix X to a valid in-block position (relative 0.5) and re-encode the packet
+				wrapper.setCursorPosition(new Vector3f(0.5f, cursor.getY(), cursor.getZ()));
+				event.markForReEncode(true);
 
-				debug("Fixed X from " + originalX + " to " + posVector.getX() + " (protocol=" + protocolValue + ")");
+				debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + protocolValue + ")");
 			}
 		} catch (Exception e) {
 			getLogger().warning("Error processing block placement packet: " + e.getMessage());
 			if (config.getBoolean("debug", false)) {
 				e.printStackTrace();
 			}
-			return;
 		}
 	}
 
-	private void onCustomPayload(final PacketEvent event) {
+	private void onCustomPayload(final PacketReceiveEvent event) {
 		try {
-			PacketContainer packet = event.getPacket();
-			// try to get the payload data directly
-			Object payload = packet.getModifier().read(1);
-			if (payload == null)
-				return;
-			sendCarpetRules(event.getPlayer());
+			WrapperPlayClientPluginMessage in = new WrapperPlayClientPluginMessage(event);
+			// only answer the carpet handshake channel
+			if ("carpet:hello".equals(in.getChannelName())) {
+				sendCarpetRules(event.getPlayer());
+			}
 		} catch (Exception ignored) { // honestly don't mind ignoring this one
 		}
 	}
 
 	private void sendCarpetRules(Player player) {
 		try {
-			PacketContainer rulePacket = new PacketContainer(PacketType.Play.Server.CUSTOM_PAYLOAD);
+			// Carpet rules body: VarInt(count) + a named NBT compound of string rules.
+			ByteArrayOutputStream body = new ByteArrayOutputStream();
+			DataOutputStream dos = new DataOutputStream(body);
 
-			ByteArrayOutputStream fullPayload = new ByteArrayOutputStream();
-			DataOutputStream dos = new DataOutputStream(fullPayload);
-			StreamSerializer.getDefault().serializeString(dos, "carpet:hello");
-
-			StreamSerializer.getDefault().serializeVarInt(dos, 1);
-
-			NbtCompound abpRule = NbtFactory.ofCompound("Rules", List.of(
-					NbtFactory.of("Value", "true"),
-					NbtFactory.of("Manager", "carpet"),
-					NbtFactory.of("Rule", "accurateBlockPlacement")));
-			StreamSerializer.getDefault().serializeCompound(dos, abpRule);
-
+			writeVarInt(dos, 1);
+			writeNamedStringCompound(dos, "Rules", List.of(
+					new String[] { "Value", "true" },
+					new String[] { "Manager", "carpet" },
+					new String[] { "Rule", "accurateBlockPlacement" }));
 			dos.flush();
 
-			rulePacket.getModifier().write(0, MinecraftReflection.getPacketDataSerializer(
-					Unpooled.wrappedBuffer(fullPayload.toByteArray())));
-
-			protocolManager.sendServerPacket(player, rulePacket);
+			WrapperPlayServerPluginMessage rulePacket =
+					new WrapperPlayServerPluginMessage("carpet:hello", body.toByteArray());
+			PacketEvents.getAPI().getPlayerManager().sendPacket(player, rulePacket);
 		} catch (Exception e) {
 			debug("Failed to send carpet rules: " + e.getMessage());
 		}
+	}
+
+	// --- payload serialization helpers (replaces ProtocolLib's StreamSerializer/NBT) ---
+
+	// Minecraft VarInt: 7 data bits per byte, MSB as continuation flag.
+	private static void writeVarInt(DataOutputStream out, int value) throws IOException {
+		while ((value & ~0x7F) != 0) {
+			out.writeByte((value & 0x7F) | 0x80);
+			value >>>= 7;
+		}
+		out.writeByte(value);
+	}
+
+	// Minecraft protocol string: VarInt(byte length) + UTF-8 bytes.
+	private static void writeMcString(DataOutputStream out, String s) throws IOException {
+		byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+		writeVarInt(out, bytes.length);
+		out.write(bytes);
+	}
+
+	// Named NBT compound of string tags, byte-identical to ProtocolLib's serializeCompound output.
+	// DataOutputStream.writeUTF emits exactly an NBT string (unsigned-short length + modified UTF-8).
+	private static void writeNamedStringCompound(DataOutputStream out, String name, List<String[]> entries)
+			throws IOException {
+		out.writeByte(10); // TAG_Compound
+		out.writeUTF(name); // root compound name
+		for (String[] entry : entries) {
+			out.writeByte(8); // TAG_String
+			out.writeUTF(entry[0]); // key
+			out.writeUTF(entry[1]); // value
+		}
+		out.writeByte(0); // TAG_End
 	}
 }

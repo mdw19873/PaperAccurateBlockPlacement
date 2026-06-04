@@ -1,6 +1,6 @@
 # PaperAccurateBlockPlacement
 
-# PLEASE NOTE: PLUGIN SUPPORTS 26.1 AS OF MOST RECENT COMMIT, HOWEVER ITS ADVISED TO WAIT FOR BOTH STABLE PAPER 26.1 AND PROTOCOL LIB RELEASES. IF YOU WANT TO USE IN ADVANCE OF THAT, BUILD FROM SOURCE AND USE PROTOCOL LIB DEV BUILD
+# PLEASE NOTE: PLUGIN SUPPORTS 26.1 AS OF MOST RECENT COMMIT, HOWEVER ITS ADVISED TO WAIT FOR BOTH STABLE PAPER 26.1 AND PACKETEVENTS RELEASES. IF YOU WANT TO USE IN ADVANCE OF THAT, BUILD FROM SOURCE AND USE A PACKETEVENTS DEV BUILD
 
 > A maintained fork of [DungeonDev's SpigotAccurateBlockPlacement](https://github.com/DungeonDev/SpigotAccurateBlockPlacement)
 
@@ -10,19 +10,19 @@ Check us out on [Modrinth :)](https://modrinth.com/plugin/paper-accurate-block-p
 Original implementation by DungeonDev. This fork maintains compatibility while adding support for newer Minecraft versions. 
 
 ## Plugin Features
-Implements Carpet's Accurate Block Placement Protocol for Paper/Pupur-based servers.
+Implements Carpet's Accurate Block Placement Protocol for Paper/Purpur-based servers.
 Similarly adds support for FlexibleBlockPlacement from Tweakeroo and easyPlace from Litematica.
 
 ## Version Compatibility
 - **Minecraft**: 1.21.7-1.21.11
-- **Server Software**: Paper/Pupur
-- **ProtocolLib**: 5.4.0 or higher
+- **Server Software**: Paper/Purpur
+- **PacketEvents**: 2.12.2 or higher
 
 ## Installation
 
 ### Prerequisites
 1. **Java 21** or higher installed
-2. **ProtocolLib 5.4.0** or higher
+2. **PacketEvents 2.12.2** or higher
 
 ### Building the Plugin
 ```

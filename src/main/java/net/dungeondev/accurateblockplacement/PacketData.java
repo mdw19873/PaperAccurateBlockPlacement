@@ -1,6 +1,6 @@
 package net.dungeondev.accurateblockplacement;
 
-import com.comphenix.protocol.wrappers.BlockPosition;
+import com.github.retrooper.packetevents.util.Vector3i;
 
-public record PacketData(BlockPosition block, int protocolValue)
+public record PacketData(Vector3i block, int protocolValue)
 {}
