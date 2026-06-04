@@ -25,7 +25,7 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:6.1.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testImplementation 'org.assertj:assertj-core:3.27.3'
+    testImplementation 'org.assertj:assertj-core:3.27.7'
     testImplementation 'org.mockito:mockito-core:5.23.0'
     // MockBukkit's v1.21 module is Java 21-compatible, so the same suite runs on both Java 21 and 25
     // in CI. It downloads the real Paper server at runtime; paper-api is still needed on the test
