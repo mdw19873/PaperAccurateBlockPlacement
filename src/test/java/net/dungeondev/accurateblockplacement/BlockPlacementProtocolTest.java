@@ -8,8 +8,10 @@ import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Orientable;
+import org.bukkit.block.data.type.Chest;
 import org.bukkit.block.data.type.Comparator;
 import org.bukkit.block.data.type.Repeater;
+import org.bukkit.block.data.type.Stairs;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -199,6 +201,199 @@ class BlockPlacementProtocolTest {
 			assertThat(BlockPlacementProtocol.isAirPlaceable(Material.CANDLE)).isTrue();
 			assertThat(BlockPlacementProtocol.isAirPlaceable(Material.RED_CANDLE)).isTrue();
 			assertThat(BlockPlacementProtocol.isAirPlaceable(Material.STONE)).isFalse();
+		}
+
+		@Test
+		@DisplayName("ignores a facing the block does not support")
+		void ignoresUnsupportedFacing() {
+			Directional furnace = (Directional) server.createBlockData(Material.FURNACE);
+			furnace.setFacing(BlockFace.NORTH);
+
+			apply(furnace, 1); // index 1 == UP, not a valid furnace facing
+
+			assertThat(furnace.getFacing()).isEqualTo(BlockFace.NORTH); // unchanged
+		}
+
+		@Test
+		@DisplayName("ignores a repeater delay outside the valid range")
+		void ignoresOutOfRangeRepeaterDelay() {
+			Repeater repeater = (Repeater) server.createBlockData(Material.REPEATER);
+			int original = repeater.getDelay();
+
+			apply(repeater, 5 * 16); // delay 5 is above the max (4) -> ignored
+
+			assertThat(repeater.getDelay()).isEqualTo(original);
+		}
+
+		@Test
+		@DisplayName("reverses a stair's facing for a high facing index (>6)")
+		void reversesStairForHighIndex() {
+			Stairs stairs = (Stairs) server.createBlockData(Material.OAK_STAIRS);
+			stairs.setFacing(BlockFace.NORTH);
+
+			apply(stairs, 7); // index 7 > 6 -> reverse facing
+
+			assertThat(stairs.getFacing()).isEqualTo(BlockFace.SOUTH);
+		}
+	}
+
+	/**
+	 * {@code resolveStairShape} corner detection - the most intricate logic in the class. Each test
+	 * places neighbouring stairs in a MockBukkit world and asserts the resolved connecting shape.
+	 */
+	@Nested
+	@DisplayName("stair shape resolution")
+	class StairShapes {
+
+		private ServerMock server;
+		private World world;
+
+		@BeforeEach
+		void setUp() {
+			server = MockBukkit.mock();
+			world = server.addSimpleWorld("test");
+		}
+
+		@AfterEach
+		void tearDown() {
+			MockBukkit.unmock();
+		}
+
+		private Block center() {
+			return world.getBlockAt(0, 64, 0);
+		}
+
+		private Stairs stair(BlockFace facing) {
+			Stairs s = (Stairs) server.createBlockData(Material.OAK_STAIRS);
+			s.setFacing(facing);
+			s.setHalf(Bisected.Half.BOTTOM);
+			return s;
+		}
+
+		// place a neighbouring stair (always BOTTOM half) relative to the centre block
+		private void putStair(BlockFace dir, BlockFace facing) {
+			center().getRelative(dir).setBlockData(stair(facing));
+		}
+
+		private Stairs.Shape resolve() {
+			// target faces NORTH -> back=NORTH, front=SOUTH, right=EAST, left=WEST
+			return BlockPlacementProtocol.resolveStairShape(center(), stair(BlockFace.NORTH));
+		}
+
+		@Test
+		@DisplayName("straight when nothing connects")
+		void straight() {
+			assertThat(resolve()).isEqualTo(Stairs.Shape.STRAIGHT);
+		}
+
+		@Test
+		@DisplayName("outer-left from a back neighbour facing left")
+		void outerLeft() {
+			putStair(BlockFace.NORTH, BlockFace.WEST);
+			assertThat(resolve()).isEqualTo(Stairs.Shape.OUTER_LEFT);
+		}
+
+		@Test
+		@DisplayName("outer-right from a back neighbour facing right")
+		void outerRight() {
+			putStair(BlockFace.NORTH, BlockFace.EAST);
+			assertThat(resolve()).isEqualTo(Stairs.Shape.OUTER_RIGHT);
+		}
+
+		@Test
+		@DisplayName("inner-left from a front neighbour facing left")
+		void innerLeft() {
+			putStair(BlockFace.SOUTH, BlockFace.WEST);
+			assertThat(resolve()).isEqualTo(Stairs.Shape.INNER_LEFT);
+		}
+
+		@Test
+		@DisplayName("inner-right from a front neighbour facing right")
+		void innerRight() {
+			putStair(BlockFace.SOUTH, BlockFace.EAST);
+			assertThat(resolve()).isEqualTo(Stairs.Shape.INNER_RIGHT);
+		}
+	}
+
+	/**
+	 * Chest auto-merge: SINGLE/LEFT/RIGHT across the neighbour-scan path and the clicked-against
+	 * path, including the sneaking suppression.
+	 */
+	@Nested
+	@DisplayName("chest auto-merge")
+	class ChestMerging {
+
+		private ServerMock server;
+		private World world;
+		private BlockPlacementProtocol protocol;
+
+		@BeforeEach
+		void setUp() {
+			server = MockBukkit.mock();
+			world = server.addSimpleWorld("test");
+			protocol = new BlockPlacementProtocol(NO_DEBUG);
+		}
+
+		@AfterEach
+		void tearDown() {
+			MockBukkit.unmock();
+		}
+
+		private Block center() {
+			return world.getBlockAt(0, 64, 0);
+		}
+
+		private Chest northChest() {
+			Chest c = (Chest) server.createBlockData(Material.CHEST);
+			c.setFacing(BlockFace.NORTH);
+			c.setType(Chest.Type.SINGLE);
+			return c;
+		}
+
+		private void putChest(BlockFace dir) {
+			center().getRelative(dir).setBlockData(northChest());
+		}
+
+		// apply with facing index 2 (NORTH) so the chest keeps facing NORTH; left = rotateCW(NORTH) = EAST
+		private Chest applyToCentre(Block clicked, boolean sneaking) {
+			Chest target = northChest();
+			protocol.apply(target, 2, center(), clicked, sneaking);
+			return target;
+		}
+
+		@Test
+		@DisplayName("merges as LEFT from a matching chest on the left (neighbour scan)")
+		void mergesLeftFromNeighbour() {
+			putChest(BlockFace.EAST); // EAST is the left of a NORTH-facing chest
+			assertThat(applyToCentre(center(), false).getType()).isEqualTo(Chest.Type.LEFT);
+		}
+
+		@Test
+		@DisplayName("merges as RIGHT from a matching chest on the right (neighbour scan)")
+		void mergesRightFromNeighbour() {
+			putChest(BlockFace.WEST);
+			assertThat(applyToCentre(center(), false).getType()).isEqualTo(Chest.Type.RIGHT);
+		}
+
+		@Test
+		@DisplayName("stays SINGLE when the placer is sneaking")
+		void staysSingleWhenSneaking() {
+			putChest(BlockFace.EAST);
+			assertThat(applyToCentre(center(), true).getType()).isEqualTo(Chest.Type.SINGLE);
+		}
+
+		@Test
+		@DisplayName("stays SINGLE with no neighbouring chest")
+		void staysSingleWithNoNeighbour() {
+			assertThat(applyToCentre(center(), false).getType()).isEqualTo(Chest.Type.SINGLE);
+		}
+
+		@Test
+		@DisplayName("merges as LEFT when clicked against a matching chest on the left")
+		void mergesLeftFromClicked() {
+			putChest(BlockFace.EAST);
+			Block clicked = center().getRelative(BlockFace.EAST);
+			assertThat(applyToCentre(clicked, false).getType()).isEqualTo(Chest.Type.LEFT);
 		}
 	}
 }
