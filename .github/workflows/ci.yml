@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+# Least-privilege: the build only needs to read the repository.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch/PR to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Run every Java version even if one fails, so we see all results.
+      fail-fast: false
+      matrix:
+        # The plugin targets Java 21 (MC 1.21) and must also work on Java 25 (MC 26.1).
+        # Production is compiled to Java 21 bytecode on both; the MockBukkit v1.21 test suite is
+        # Java 21-compatible, so the same tests run under each JDK.
+        java: [ '21', '25' ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # --no-daemon: CI jobs are single-shot, and it avoids a Gradle 8.10-on-JDK-25 daemon quirk.
+      - name: Build and test
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Upload test & coverage reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-java${{ matrix.java }}
+          path: |
+            build/reports/tests/test
+            build/reports/jacoco/test
+          if-no-files-found: ignore
+          retention-days: 7
