@@ -5,6 +5,7 @@ import com.github.retrooper.packetevents.event.PacketListenerAbstract;
 import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
 import com.github.retrooper.packetevents.util.Vector3f;
 import com.github.retrooper.packetevents.util.Vector3i;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerBlockPlacement;
@@ -13,6 +14,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPl
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import org.bukkit.Axis;
 import org.bukkit.Material;
+import org.bukkit.Tag;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
@@ -44,12 +46,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	private FileConfiguration config;
 
-	private final Map<Player, PacketData> playerPacketDataHashMap = new ConcurrentHashMap<>();
+	// cached config values - these are read on every block placement, so we avoid
+	// re-parsing them out of the FileConfiguration each time (refreshed on reload).
+	private volatile boolean debugEnabled;
+	private volatile boolean candlesAirPlaceable;
+
+	private final Map<UUID, PacketData> playerPacketDataHashMap = new ConcurrentHashMap<>();
 
 	@Override
 	public void onLoad() {
@@ -58,21 +66,15 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
 		PacketEvents.getAPI().load();
 
+		// single listener for both packet types - one dispatch per received packet
 		PacketEvents.getAPI().getEventManager().registerListener(
 				new PacketListenerAbstract(PacketListenerPriority.LOWEST) {
 					@Override
 					public void onPacketReceive(PacketReceiveEvent event) {
-						if (event.getPacketType() == PacketType.Play.Client.PLAYER_BLOCK_PLACEMENT) {
+						PacketTypeCommon type = event.getPacketType();
+						if (type == PacketType.Play.Client.PLAYER_BLOCK_PLACEMENT) {
 							onBlockBuildPacket(event);
-						}
-					}
-				});
-
-		PacketEvents.getAPI().getEventManager().registerListener(
-				new PacketListenerAbstract(PacketListenerPriority.NORMAL) {
-					@Override
-					public void onPacketReceive(PacketReceiveEvent event) {
-						if (event.getPacketType() == PacketType.Play.Client.PLUGIN_MESSAGE) {
+						} else if (type == PacketType.Play.Client.PLUGIN_MESSAGE) {
 							onCustomPayload(event);
 						}
 					}
@@ -85,21 +87,11 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 		saveDefaultConfig();
 		config = getConfig();
+		refreshConfigCache();
 
 		getLogger().info("PaperAccurateBlockPlacement loaded!");
 
 		getServer().getPluginManager().registerEvents(this, this);
-	}
-
-	private boolean isAirPlaceableBlock(Material material) {
-
-		if (config.getBoolean("air-placement.candles", true)) {
-			if (material.name().endsWith("_CANDLE") || material == Material.CANDLE) {
-				return true;
-			}
-		}
-		return false;
-		// todo: consider other additional blocks to add
 	}
 
 	@Override
@@ -109,6 +101,16 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		if (PacketEvents.getAPI() != null) {
 			PacketEvents.getAPI().terminate();
 		}
+	}
+
+	private void refreshConfigCache() {
+		debugEnabled = config.getBoolean("debug", false);
+		candlesAirPlaceable = config.getBoolean("air-placement.candles", false);
+	}
+
+	private boolean isAirPlaceableBlock(Material material) {
+		// todo: consider other additional blocks to add
+		return candlesAirPlaceable && Tag.CANDLES.isTagged(material);
 	}
 
 	@Override
@@ -123,6 +125,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 				reloadConfig();
 				config = getConfig();
+				refreshConfigCache();
 				sender.sendMessage("<green>PaperAccurateBlockPlacement config reloaded</green>");
 				return true;
 			}
@@ -134,7 +137,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	}
 
 	private void debug(String message) {
-		if (config.getBoolean("debug", false)) {
+		if (debugEnabled) {
 			getLogger().info("[DEBUG] " + message);
 		}
 	}
@@ -161,13 +164,13 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 	@EventHandler
 	public void onPlayerQuit(PlayerQuitEvent event) {
-		playerPacketDataHashMap.remove(event.getPlayer());
+		playerPacketDataHashMap.remove(event.getPlayer().getUniqueId());
 	}
 
 	@EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
 	public void onBuildEvent(BlockPlaceEvent event) {
 		Player player = event.getPlayer();
-		PacketData packetData = playerPacketDataHashMap.get(player);
+		PacketData packetData = playerPacketDataHashMap.get(player.getUniqueId());
 
 		if (packetData == null) {
 			return;
@@ -183,43 +186,82 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 						&& packetBlock.getZ() == clickedBlock.getZ());
 
 		if (!positionMatches) {
-			debug("Position mismatch: packet=" + packetBlock + " placed=" + block.getLocation() + " clicked="
-					+ clickedBlock.getLocation());
-			playerPacketDataHashMap.remove(player);
+			if (debugEnabled) {
+				debug("Position mismatch: packet=" + packetBlock + " placed=" + block.getLocation() + " clicked="
+						+ clickedBlock.getLocation());
+			}
+			playerPacketDataHashMap.remove(player.getUniqueId());
 			return;
 		}
 
 		if (isAirPlaceableBlock(block.getType())) {
 			handleAirPlacement(event, packetData.protocolValue());
-			playerPacketDataHashMap.remove(player);
+			playerPacketDataHashMap.remove(player.getUniqueId());
 			return;
 		}
 
-		debug("Accurate placement: " + block.getType() + " protocol=" + packetData.protocolValue() + " at "
-				+ block.getLocation() + " clicked: " + event.getBlockAgainst().getFace(block));
+		if (debugEnabled) {
+			debug("Accurate placement: " + block.getType() + " protocol=" + packetData.protocolValue() + " at "
+					+ block.getLocation() + " clicked: " + event.getBlockAgainst().getFace(block));
+		}
 
 		accurateBlockProtocol(event, packetData.protocolValue());
-		playerPacketDataHashMap.remove(player);
+		playerPacketDataHashMap.remove(player.getUniqueId());
 	}
 
 	private void accurateBlockProtocol(BlockPlaceEvent event, int protocolValue) {
-		Player player = event.getPlayer();
 		Block block = event.getBlock();
-		Block clickedBlock = event.getBlockAgainst();
 		BlockData blockData = block.getBlockData();
-		BlockData clickBlockData = clickedBlock.getBlockData();
-
-		debug("accurateBlockProtocol: material=" + blockData.getMaterial() + " protocol=" + protocolValue + " binary="
-				+ Integer.toBinaryString(protocolValue));
 
 		if (blockData instanceof Bed) {
-			return;
+			return; // let vanilla handle beds
 		}
 
-		if (blockData instanceof Directional) {
-			int facingIndex = protocolValue & 0xF;
-			Directional directional = (Directional) blockData;
+		applyProtocolOrientation(event, protocolValue, blockData);
 
+		// validate and apply block data
+		boolean canPlace = block.canPlace(blockData);
+		if (!canPlace && debugEnabled && blockData instanceof Directional dir
+				&& (dir.getFacing() == BlockFace.UP || dir.getFacing() == BlockFace.DOWN)) {
+			debug("canPlace=false for vertical: " + blockData.getMaterial() + " facing " + dir.getFacing() + " at "
+					+ block.getLocation());
+		}
+
+		if (canPlace) {
+			scheduleApply(block, blockData);
+		} else {
+			event.setCancelled(true);
+		}
+	}
+
+	// specifically for blocks you can't normally place without placing against
+	// something i.e. candles
+	private void handleAirPlacement(BlockPlaceEvent event, int protocolValue) {
+		Block block = event.getBlock();
+		BlockData blockData = block.getBlockData();
+
+		// apply any orientation, then force the placement - air-placeable blocks
+		// intentionally bypass the canPlace gate (that's the whole point).
+		applyProtocolOrientation(event, protocolValue, blockData);
+		scheduleApply(block, blockData);
+	}
+
+	// Mutates blockData according to the Carpet protocol value: facing, chest merging,
+	// stair shape, log axis, repeater delay, comparator/bisected mode. Pure orientation -
+	// it does not gate on canPlace or schedule anything, so both the normal and air-placement
+	// paths can share it.
+	private void applyProtocolOrientation(BlockPlaceEvent event, int protocolValue, BlockData blockData) {
+		Block block = event.getBlock();
+		Block clickedBlock = event.getBlockAgainst();
+		Player player = event.getPlayer();
+
+		if (debugEnabled) {
+			debug("accurateBlockProtocol: material=" + blockData.getMaterial() + " protocol=" + protocolValue
+					+ " binary=" + Integer.toBinaryString(protocolValue));
+		}
+
+		if (blockData instanceof Directional directional) {
+			int facingIndex = protocolValue & 0xF;
 			BlockFace currentFacing = directional.getFacing();
 			debug("Directional: facingIndex=" + facingIndex + " currentFacing=" + currentFacing);
 
@@ -230,29 +272,16 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				directional.setFacing(newFacing);
 				debug("Reversed facing from " + currentFacing + " to " + newFacing);
 			} else if (facingIndex <= 5) {
-				BlockFace face = null;
+				BlockFace face = switch (facingIndex) {
+					case 0 -> BlockFace.DOWN;
+					case 1 -> BlockFace.UP;
+					case 2 -> BlockFace.NORTH;
+					case 3 -> BlockFace.SOUTH;
+					case 4 -> BlockFace.WEST;
+					case 5 -> BlockFace.EAST;
+					default -> null;
+				};
 				Set<BlockFace> validFaces = directional.getFaces();
-				switch (facingIndex) {
-					case 0:
-						face = BlockFace.DOWN;
-						break;
-					case 1:
-						face = BlockFace.UP;
-						break;
-					case 2:
-						face = BlockFace.NORTH;
-						break;
-					case 3:
-						face = BlockFace.SOUTH;
-						break;
-					case 4:
-						face = BlockFace.WEST;
-						break;
-					case 5:
-						face = BlockFace.EAST;
-						break;
-				}
-
 				debug("Trying to set facing to " + face + " valid="
 						+ (face != null ? validFaces.contains(face) : "null"));
 
@@ -273,13 +302,12 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			}
 
 			// chest merging
-			if (blockData instanceof Chest) {
-				Chest chest = (Chest) blockData;
+			if (blockData instanceof Chest chest) {
 				chest.setType(Chest.Type.SINGLE);
 				BlockFace left = rotateCW(chest.getFacing());
 
-				if (!clickedBlock.equals(block) && clickBlockData.getMaterial() == chest.getMaterial()) {
-					Chest clickChest = (Chest) clickBlockData;
+				if (!clickedBlock.equals(block) && clickedBlock.getBlockData() instanceof Chest clickChest
+						&& clickChest.getMaterial() == chest.getMaterial()) {
 					if (clickChest.getType() == Chest.Type.SINGLE && chest.getFacing() == clickChest.getFacing()) {
 						BlockFace relation = block.getFace(clickedBlock);
 						if (left == relation) {
@@ -291,103 +319,60 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				} else if (!player.isSneaking()) {
 					BlockData leftBlock = block.getRelative(left).getBlockData();
 					BlockData rightBlock = block.getRelative(left.getOppositeFace()).getBlockData();
-					if (leftBlock.getMaterial() == chest.getMaterial() &&
-							((Chest) leftBlock).getType() == Chest.Type.SINGLE &&
-							((Chest) leftBlock).getFacing() == chest.getFacing()) {
+					if (leftBlock instanceof Chest lc && lc.getMaterial() == chest.getMaterial()
+							&& lc.getType() == Chest.Type.SINGLE && lc.getFacing() == chest.getFacing()) {
 						chest.setType(Chest.Type.LEFT);
-					} else if (rightBlock.getMaterial() == chest.getMaterial() &&
-							((Chest) rightBlock).getType() == Chest.Type.SINGLE &&
-							((Chest) rightBlock).getFacing() == chest.getFacing()) {
+					} else if (rightBlock instanceof Chest rc && rc.getMaterial() == chest.getMaterial()
+							&& rc.getType() == Chest.Type.SINGLE && rc.getFacing() == chest.getFacing()) {
 						chest.setType(Chest.Type.RIGHT);
 					}
 				}
-			} else if (blockData instanceof Stairs) {
-				((Stairs) blockData).setShape(handleStairs(block, (Stairs) blockData));
+			} else if (blockData instanceof Stairs stairs) {
+				stairs.setShape(handleStairs(block, stairs));
 			}
-		} else if (blockData instanceof Orientable) {
-			Orientable orientable = (Orientable) blockData;
+		} else if (blockData instanceof Orientable orientable) {
 			Set<Axis> validAxes = orientable.getAxes();
-			Axis axis = null;
-			switch (protocolValue % 3) {
-				case 0:
-					axis = Axis.X;
-					break;
-				case 1:
-					axis = Axis.Y;
-					break;
-				case 2:
-					axis = Axis.Z;
-					break;
-			}
+			Axis axis = switch (protocolValue % 3) {
+				case 0 -> Axis.X;
+				case 1 -> Axis.Y;
+				case 2 -> Axis.Z;
+				default -> null;
+			};
 			if (axis != null && validAxes.contains(axis)) {
 				orientable.setAxis(axis);
 				debug("Set axis to " + axis);
 			}
 		}
 
-		// handle additional properties: stairs half toggle|repeater delay|comparator
-		// mode
+		// handle additional properties: stairs half toggle|repeater delay|comparator mode
 		protocolValue &= 0xFFFFFFF0;
 		if (protocolValue >= 16) {
-			if (blockData instanceof Repeater) {
-				Repeater repeater = (Repeater) blockData;
+			if (blockData instanceof Repeater repeater) {
 				int delay = protocolValue / 16;
 				if (delay >= repeater.getMinimumDelay() && delay <= repeater.getMaximumDelay()) {
 					repeater.setDelay(delay);
 					debug("Set repeater delay to " + delay);
 				}
 			} else if (protocolValue == 16) {
-				if (blockData instanceof Comparator) {
-					((Comparator) blockData).setMode(Comparator.Mode.SUBTRACT);
+				if (blockData instanceof Comparator comparator) {
+					comparator.setMode(Comparator.Mode.SUBTRACT);
 					debug("Set comparator to subtract mode");
-				} else if (blockData instanceof Bisected) {
-					Bisected bisected = (Bisected) blockData;
+				} else if (blockData instanceof Bisected bisected) {
 					bisected.setHalf(Bisected.Half.TOP);
 					debug("Set bisected half to TOP");
 				}
 			}
 		}
-
-		// validate and apply block data
-		boolean canPlace = block.canPlace(blockData);
-		if (!canPlace && blockData instanceof Directional) {
-			Directional dir = (Directional) blockData;
-			if (dir.getFacing() == BlockFace.UP || dir.getFacing() == BlockFace.DOWN) {
-				debug("canPlace=false for vertical: " + blockData.getMaterial() + " facing " + dir.getFacing() + " at "
-						+ block.getLocation());
-			}
-		}
-
-		if (canPlace) {
-			// schedule the block update for next tick to bypass Paper's validation
-			final BlockData finalBlockData = blockData;
-			getServer().getScheduler().runTask(this, () -> {
-				if (block.getType() == finalBlockData.getMaterial()) {
-					block.setBlockData(finalBlockData, false);
-					debug("Applied scheduled blockdata update");
-				}
-			});
-		} else {
-			event.setCancelled(true);
-		}
 	}
 
-	// specifically for blocks you can't normally place without placing against
-	// something i.e. candles
-	private void handleAirPlacement(BlockPlaceEvent event, int protocolValue) {
-		Block block = event.getBlock();
-		BlockData blockData = block.getBlockData();
-
-		// apply any directional/orientable properties from the protocol
-		accurateBlockProtocol(event, protocolValue);
-
-		// if not cancelled by accurateBlockProtocol, force the placement
-		if (!event.isCancelled()) {
-			final BlockData finalBlockData = blockData;
-			getServer().getScheduler().runTask(this, () -> {
-				block.setBlockData(finalBlockData, false);
-			});
-		}
+	// Applies the finished block data next tick to bypass Paper's placement validation.
+	private void scheduleApply(Block block, BlockData blockData) {
+		getServer().getScheduler().runTask(this, () -> {
+			if (block.getType() == blockData.getMaterial()) {
+				block.setBlockData(blockData, false);
+				debug("Applied scheduled blockdata update");
+			}
+		});
 	}
 
 	private BlockFace rotateCW(BlockFace in) {
@@ -410,18 +395,12 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		BlockFace frontFace = backFace.getOppositeFace();
 		BlockFace rightFace = rotateCW(backFace);
 		BlockFace leftFace = rightFace.getOppositeFace();
-		Stairs backStairs = block.getRelative(backFace).getBlockData() instanceof Stairs
-				? (Stairs) block.getRelative(backFace).getBlockData()
-				: null;
-		Stairs frontStairs = block.getRelative(frontFace).getBlockData() instanceof Stairs
-				? (Stairs) block.getRelative(frontFace).getBlockData()
-				: null;
-		Stairs leftStairs = block.getRelative(leftFace).getBlockData() instanceof Stairs
-				? (Stairs) block.getRelative(leftFace).getBlockData()
-				: null;
-		Stairs rightStairs = block.getRelative(rightFace).getBlockData() instanceof Stairs
-				? (Stairs) block.getRelative(rightFace).getBlockData()
-				: null;
+
+		// each neighbour's block data is fetched once via pattern matching
+		Stairs backStairs = block.getRelative(backFace).getBlockData() instanceof Stairs s ? s : null;
+		Stairs frontStairs = block.getRelative(frontFace).getBlockData() instanceof Stairs s ? s : null;
+		Stairs leftStairs = block.getRelative(leftFace).getBlockData() instanceof Stairs s ? s : null;
+		Stairs rightStairs = block.getRelative(rightFace).getBlockData() instanceof Stairs s ? s : null;
 
 		if ((backStairs != null && backStairs.getHalf() == half && backStairs.getFacing() == leftFace) &&
 				!(rightStairs != null && rightStairs.getHalf() == half && rightStairs.getFacing() == backFace)) {
@@ -441,11 +420,8 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	}
 
 	private void onBlockBuildPacket(final PacketReceiveEvent event) {
-		Player player = event.getPlayer();
-
 		try {
 			WrapperPlayClientPlayerBlockPlacement wrapper = new WrapperPlayClientPlayerBlockPlacement(event);
-			Vector3i blockPosition = wrapper.getBlockPosition();
 			Vector3f cursor = wrapper.getCursorPosition();
 
 			// Unlike ProtocolLib (which exposes an absolute pos vector), PacketEvents gives the
@@ -456,17 +432,22 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				// tweakeroo sends (value * 2) + 2, so we reverse it
 				int protocolValue = ((int) relativeX - 2) / 2; // PUT THE DIVISION BACK
 
-				playerPacketDataHashMap.put(player, new PacketData(blockPosition, protocolValue));
+				UUID uuid = event.getUser().getUUID();
+				if (uuid != null) {
+					playerPacketDataHashMap.put(uuid, new PacketData(wrapper.getBlockPosition(), protocolValue));
+				}
 
 				// fix X to a valid in-block position (relative 0.5) and re-encode the packet
 				wrapper.setCursorPosition(new Vector3f(0.5f, cursor.getY(), cursor.getZ()));
 				event.markForReEncode(true);
 
-				debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + protocolValue + ")");
+				if (debugEnabled) {
+					debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + protocolValue + ")");
+				}
 			}
 		} catch (Exception e) {
 			getLogger().warning("Error processing block placement packet: " + e.getMessage());
-			if (config.getBoolean("debug", false)) {
+			if (debugEnabled) {
 				e.printStackTrace();
 			}
 		}
