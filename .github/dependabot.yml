@@ -1,0 +1,45 @@
+# Dependabot configuration - https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+
+updates:
+  # Gradle build dependencies (test libraries, PacketEvents, etc.).
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    # Group minor and patch bumps into one PR to cut noise; major bumps get their
+    # own PR so potentially breaking changes are reviewed individually.
+    groups:
+      gradle-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # paper-api is intentionally pinned to the MC 1.21 support floor (compile) and
+      # ceiling (tests). Changing it is a deliberate support-range decision, not an
+      # automatic bump - manage it by hand.
+      - dependency-name: "io.papermc.paper:paper-api"
+
+  # GitHub Actions used by the CI workflow.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "ci"
+    # Action bumps are usually safe together, so collapse them into a single PR.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
