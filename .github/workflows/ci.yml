@@ -42,9 +42,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      # --no-daemon: CI jobs are single-shot, and it avoids a Gradle 8.10-on-JDK-25 daemon quirk.
       - name: Build and test
-        run: ./gradlew build --no-daemon --stacktrace
+        run: ./gradlew build --stacktrace
 
       - name: Upload test & coverage reports
         if: ${{ !cancelled() }}

@@ -3,14 +3,14 @@ plugins {
     id 'jacoco'
 }
 
-group 'net.dungeondev'
-version '1.2.0+mc26.1'
+group = 'net.dungeondev'
+version = '1.2.0+mc26.1'
 
 repositories {
     mavenCentral()
-    maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
-    maven { url 'https://repo.papermc.io/repository/maven-public/' }
-    maven { url 'https://repo.codemc.io/repository/maven-releases/' }
+    maven { url = 'https://oss.sonatype.org/content/repositories/snapshots' }
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://repo.codemc.io/repository/maven-releases/' }
 }
 
 dependencies {
