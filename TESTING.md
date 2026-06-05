@@ -77,6 +77,23 @@ The codebase is split so that the testable logic is isolated from the hard-to-te
   of decoding logic. Its packet plumbing depends on a live Netty pipeline that MockBukkit does not
   provide, so it is verified by **manual/integration testing** with a real client (Litematica
   easyPlace / Tweakeroo Flexible Block Placement) rather than unit tests. See `README.md`.
+- **EasyPlace V3** — the bit-walking (`BlockPlacementProtocol.applyV3` / `decodeV3` / `requiredBits`)
+  is unit-tested against an in-memory `StateModel` fake in `BlockPlacementProtocolV3Test`. The
+  `NmsStateModel` reflection layer reaches into the server's block-state internals, which MockBukkit
+  does not expose, so it is **not** unit-tested — it is covered by the manual run below.
+
+## Manual end-to-end check for V3
+
+1. Build the jar (`./gradlew clean build`) and drop it on a Mojang-mapped Paper/Purpur server
+   (MC 1.20.5+) alongside PacketEvents.
+2. Set `easyplace-protocol: v3` in `config.yml` and run `/abp reload` (the console must NOT log the
+   "falling back to v2" warning — that means the NMS handles didn't resolve).
+3. In Litematica set `easyPlaceProtocol` to **Version 3**, enable easyPlace, and build a test
+   schematic exercising: stairs (facing/half/shape), slabs (top/bottom), repeaters (delay),
+   comparators (mode), buttons/levers (face+facing), hoppers (facing), note blocks (note), crafters
+   (orientation). Confirm every block lands with the schematic's exact orientation.
+4. Flip back to `easyplace-protocol: v2`, `/abp reload`, and confirm Litematica V2/Auto and Tweakeroo
+   still orient correctly.
 
 When adding a feature, put the logic in a domain class so it can be unit-tested, and keep the plugin
 class a thin wire-up.

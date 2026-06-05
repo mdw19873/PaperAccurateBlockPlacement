@@ -14,6 +14,7 @@ import org.bukkit.block.data.type.Comparator;
 import org.bukkit.block.data.type.Repeater;
 import org.bukkit.block.data.type.Stairs;
 
+import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -48,9 +49,33 @@ final class BlockPlacementProtocol {
 		return cursorX >= PROTOCOL_CURSOR_THRESHOLD;
 	}
 
-	/** Reverses Tweakeroo/Litematica's {@code (value * 2) + 2} cursor encoding. */
+	/** Reverses Tweakeroo/Litematica's {@code (value * 2) + 2} cursor encoding (EasyPlace V2). */
 	static int decode(float cursorX) {
 		return ((int) cursorX - 2) / 2;
+	}
+
+	/**
+	 * Reverses Litematica's EasyPlace V3 {@code value + 2} cursor encoding. Unlike V2 the value is
+	 * not doubled, so the decode is a plain {@code (int) x - 2}.
+	 */
+	static int decodeV3(float cursorX) {
+		return (int) cursorX - 2;
+	}
+
+	/**
+	 * Number of bits the V3 protocol uses to index a property with {@code valueCount} possible
+	 * values: {@code floorLog2(smallestEncompassingPowerOfTwo(valueCount))}, mirroring Minecraft's
+	 * {@code MathHelper}. Examples: 1&rarr;0, 2&rarr;1, 3&rarr;2, 4&rarr;2, 5..8&rarr;3.
+	 */
+	static int requiredBits(int valueCount) {
+		if (valueCount <= 1) {
+			return 0;
+		}
+		int pow2 = Integer.highestOneBit(valueCount);
+		if (pow2 < valueCount) {
+			pow2 <<= 1;
+		}
+		return Integer.numberOfTrailingZeros(pow2);
 	}
 
 	/** Maps a protocol facing index (0..5) to a {@link BlockFace}, or {@code null} if out of range. */
@@ -196,6 +221,91 @@ final class BlockPlacementProtocol {
 					debug.accept("Set bisected half to TOP");
 				}
 			}
+		}
+	}
+
+	/**
+	 * Applies the EasyPlace <b>V3</b> orientation to {@code model}. V3 packs every whitelisted
+	 * block-state property generically, so unlike {@link #apply} this needs no per-block
+	 * special-casing - the {@link StateModel} owns the state table and the placement validation.
+	 * Mirrors Litematica's {@code PlacementHandler.applyPlacementProtocolV3}.
+	 *
+	 * <p>Bit layout (LSB first): bit 0 reserved; the first direction property occupies 3 bits at
+	 * offset 1 as {@code facingId << 1}; then each whitelisted non-direction property, in ascending
+	 * property-name order, occupies {@link #requiredBits} bits holding its value index.
+	 *
+	 * @param model         the block's state-property table (mutated in place via the model)
+	 * @param protocolValue the decoded V3 protocol value
+	 * @param playerFacing  the placing player's horizontal facing (for the direction fallback)
+	 */
+	void applyV3(StateModel model, int protocolValue, BlockFace playerFacing) {
+		debug.accept("applyV3: protocol=" + protocolValue + " binary=" + Integer.toBinaryString(protocolValue));
+
+		if (protocolValue < 0) {
+			return; // no orientation requested
+		}
+
+		if (model.hasDirectionProperty()) {
+			int facingIndex = (protocolValue & 0xF) >> 1;
+			model.applyDirection(facingIndex, playerFacing);
+			protocolValue >>>= 3;
+		}
+
+		// consume the reserved low bit (bit 0 in the wire layout)
+		protocolValue >>>= 1;
+
+		for (StateModel.Prop prop : model.sortedProperties()) {
+			int bits = requiredBits(prop.valueCount());
+			int index = protocolValue & ((1 << bits) - 1);
+			// match Litematica: only apply and consume bits when the index is in range. Real client
+			// input is always in range; on malformed input we simply stop tracking that property.
+			if (index >= 0 && index < prop.valueCount()) {
+				prop.trySetIndex(index);
+				protocolValue >>>= bits;
+			}
+		}
+	}
+
+	/**
+	 * Abstraction over a block's state-property table, used by {@link #applyV3}. Implementations
+	 * decide how to read and mutate the underlying block state (production uses NMS reflection in
+	 * {@code NmsStateModel}); keeping the bit-walking in {@link #applyV3} lets it be unit-tested
+	 * against a simple in-memory fake.
+	 */
+	interface StateModel {
+
+		/** True if the block has a "first" direction-valued property (excluding vertical_direction). */
+		boolean hasDirectionProperty();
+
+		/**
+		 * Apply a decoded facing index to the first direction property, validating placement and
+		 * keeping the change only if it survives.
+		 *
+		 * @param facingIndex  {@code 6} &rarr; opposite of the current facing; {@code 0..5} &rarr; the
+		 *                     face from {@link #facingFromIndex}; anything else &rarr; the opposite of
+		 *                     {@code playerFacing}
+		 * @param playerFacing the placing player's horizontal facing, for the out-of-range fallback
+		 */
+		void applyDirection(int facingIndex, BlockFace playerFacing);
+
+		/** Whitelisted, non-direction properties in ascending property-name order. */
+		List<Prop> sortedProperties();
+
+		/** The resulting block data after all mutations. */
+		BlockData result();
+
+		/** A single whitelisted, non-direction property of the block. */
+		interface Prop {
+
+			/** Number of possible values, sorted the same way the client sorts them. */
+			int valueCount();
+
+			/**
+			 * Set this property to the value at {@code index} in the client's sorted order, applying
+			 * the same guards as Litematica: no-op if already equal, skip a slab {@code DOUBLE} value
+			 * (to avoid slab duplication), and revert if the candidate would not survive placement.
+			 */
+			void trySetIndex(int index);
 		}
 	}
 
