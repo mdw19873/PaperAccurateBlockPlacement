@@ -51,6 +51,12 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 	private BlockPlacementProtocol protocol;
 
+	// Carpet handshake identity advertised on the carpet:hello channel. The body is never parsed
+	// by Litematica (it flips isCarpetServer on the channel id alone), but real Carpet clients do
+	// read it, so we keep a stable version/brand.
+	private static final int CARPET_PROTOCOL_VERSION = 69;
+	private static final String CARPET_BRAND = "PAPER-ABP";
+
 	private final Map<UUID, PacketData> playerPacketDataHashMap = new ConcurrentHashMap<>();
 
 	// players we have already answered the carpet:hello handshake for, so a client cannot
@@ -143,13 +149,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 	@EventHandler
 	public void onPlayerJoin(PlayerJoinEvent event) {
-		try {
-			WrapperPlayServerPluginMessage packet = new WrapperPlayServerPluginMessage(
-					CarpetPayloads.CHANNEL, CarpetPayloads.hello(69, "PAPER-ABP"));
-			PacketEvents.getAPI().getPlayerManager().sendPacket(event.getPlayer(), packet);
-		} catch (Exception e) {
-			debug("Failed to send carpet hello packet to " + event.getPlayer().getName() + ": " + e.getMessage());
-		}
+		sendCarpetHello(event.getPlayer());
 	}
 
 	@EventHandler
@@ -293,9 +293,23 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			// first time, so a client spamming the channel cannot trigger repeated responses
 			UUID uuid = event.getUser().getUUID();
 			if (uuid != null && carpetGreeted.add(uuid)) {
+				// Mirror genuine Carpet: answer the client's hello on the same channel before the
+				// rules, so AUTO-mode Litematica detects the server even if the proactive join-time
+				// hello raced the client's channel registration.
+				sendCarpetHello(event.getPlayer());
 				sendCarpetRules(event.getPlayer());
 			}
 		} catch (Exception ignored) { // honestly don't mind ignoring this one
+		}
+	}
+
+	private void sendCarpetHello(Player player) {
+		try {
+			WrapperPlayServerPluginMessage packet = new WrapperPlayServerPluginMessage(
+					CarpetPayloads.CHANNEL, CarpetPayloads.hello(CARPET_PROTOCOL_VERSION, CARPET_BRAND));
+			PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet);
+		} catch (Exception e) {
+			debug("Failed to send carpet hello packet to " + player.getName() + ": " + e.getMessage());
 		}
 	}
 

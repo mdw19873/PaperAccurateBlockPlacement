@@ -57,6 +57,15 @@ class CarpetPayloadsTest {
 			assertThat(body).containsExactly(
 					0x45, 0x09, 'P', 'A', 'P', 'E', 'R', '-', 'A', 'B', 'P');
 		}
+
+		@Test
+		@DisplayName("is deterministic, so the join-time and client-reply sends are byte-identical")
+		void deterministic() {
+			// The adapter sends this same payload both proactively on join and as the reply to a
+			// client-initiated carpet:hello; identical bytes are what make AUTO->V2 detection reliable.
+			assertThat(CarpetPayloads.hello(69, "PAPER-ABP"))
+					.isEqualTo(CarpetPayloads.hello(69, "PAPER-ABP"));
+		}
 	}
 
 	@Nested

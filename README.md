@@ -40,9 +40,15 @@ See [TESTING.md](TESTING.md) for the testing stack, conventions, and how to run 
 ## Configuration advice for Clients
 
 ### For Litematica
-1. Set `easyPlaceProtocolVersion` to **"Version 2"**
+1. Set `easyPlaceProtocol` to **"Version 2"** (or leave it on **"Auto"** — the server
+   announces itself on the `carpet:hello` channel, so Auto resolves to Version 2 here)
 2. Enable easyPlace mode
 3. Build with easyPlace like normal
+
+> **Note:** This plugin implements **Version 2** of the protocol. Litematica's
+> **Version 3** is a different, Servux-based protocol and is **not** supported — leave
+> the setting on Auto or Version 2. Selecting Version 3 will not place blocks correctly
+> against this server.
 
 ### For Tweakeroo
 1. Set `carpetAccuratePlacementProtocol` to **"true"**
