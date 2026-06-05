@@ -80,7 +80,12 @@ The codebase is split so that the testable logic is isolated from the hard-to-te
 - **EasyPlace V3** — the bit-walking (`BlockPlacementProtocol.applyV3` / `decodeV3` / `requiredBits`)
   is unit-tested against an in-memory `StateModel` fake in `BlockPlacementProtocolV3Test`. The
   `NmsStateModel` reflection layer reaches into the server's block-state internals, which MockBukkit
-  does not expose, so it is **not** unit-tested — it is covered by the manual run below.
+  does not expose. `NmsStateModelTest` covers what is verifiable off-server — the **fail-soft
+  contract** (the static initializer never throws; `create()` returns `null` for non-`CraftBlockData`
+  so the V2 path is untouched), which runs on CI. The genuine reflection round-trip
+  (`BlockData → NMS BlockState → mutate → BlockData`) is an `@EnabledIf("…#nmsAvailable")`-gated test
+  that is **disabled on CI** (no Mojang-mapped classes on the classpath) and runs only inside a real
+  Paper/Purpur server; that path is also exercised by the manual run below.
 
 ## Manual end-to-end check for V3
 

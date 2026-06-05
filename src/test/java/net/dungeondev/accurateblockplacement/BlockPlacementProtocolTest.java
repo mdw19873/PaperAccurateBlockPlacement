@@ -59,6 +59,56 @@ class BlockPlacementProtocolTest {
 		}
 	}
 
+	/**
+	 * The mode-aware decode selection the transport adapter delegates to. Pure: it folds the cursor
+	 * threshold and the V2/V3 scheme choice into one call, so the adapter holds no decode logic.
+	 */
+	@Nested
+	@DisplayName("decodePlacement (mode selection)")
+	class DecodePlacement {
+
+		@ParameterizedTest
+		@ValueSource(floats = { 0f, 0.5f, 1.99f })
+		@DisplayName("returns null when the cursor carries no protocol (< 2), in either mode")
+		void noProtocol(float cursorX) {
+			assertThat(BlockPlacementProtocol.decodePlacement(cursorX, false)).isNull();
+			assertThat(BlockPlacementProtocol.decodePlacement(cursorX, true)).isNull();
+		}
+
+		@Test
+		@DisplayName("decodes with the V2 scheme when not in V3 mode")
+		void v2Mode() {
+			// value 5 -> V2 cursor (5*2)+2 = 12
+			assertThat(BlockPlacementProtocol.decodePlacement(12f, false))
+					.isEqualTo(new BlockPlacementProtocol.DecodedPlacement(5, false));
+		}
+
+		@Test
+		@DisplayName("decodes with the V3 scheme when in V3 mode")
+		void v3Mode() {
+			// value 10 -> V3 cursor 10+2 = 12 (no doubling)
+			assertThat(BlockPlacementProtocol.decodePlacement(12f, true))
+					.isEqualTo(new BlockPlacementProtocol.DecodedPlacement(10, true));
+		}
+
+		@Test
+		@DisplayName("the same cursor decodes to different values under V2 vs V3 (per-packet ambiguity)")
+		void modeDisambiguation() {
+			float cursor = 12f;
+			assertThat(BlockPlacementProtocol.decodePlacement(cursor, false).protocolValue()).isEqualTo(5);
+			assertThat(BlockPlacementProtocol.decodePlacement(cursor, true).protocolValue()).isEqualTo(10);
+		}
+
+		@Test
+		@DisplayName("the threshold cursor (exactly 2) carries protocol value 0")
+		void thresholdBoundary() {
+			assertThat(BlockPlacementProtocol.decodePlacement(2f, false))
+					.isEqualTo(new BlockPlacementProtocol.DecodedPlacement(0, false));
+			assertThat(BlockPlacementProtocol.decodePlacement(2f, true))
+					.isEqualTo(new BlockPlacementProtocol.DecodedPlacement(0, true));
+		}
+	}
+
 	@Nested
 	@DisplayName("facing index mapping")
 	class FacingIndexMapping {
@@ -235,6 +285,65 @@ class BlockPlacementProtocolTest {
 
 			assertThat(stairs.getFacing()).isEqualTo(BlockFace.SOUTH);
 		}
+
+		@Test
+		@DisplayName("sets a vertical facing (UP) on a block that supports it")
+		void setsVerticalFacing() {
+			Directional observer = (Directional) server.createBlockData(Material.OBSERVER);
+
+			apply(observer, 1); // index 1 == UP, which an observer supports
+
+			assertThat(observer.getFacing()).isEqualTo(BlockFace.UP);
+		}
+
+		@Test
+		@DisplayName("ignores a high facing index (>6) on a non-stairs directional block")
+		void ignoresHighIndexForNonStairs() {
+			Directional furnace = (Directional) server.createBlockData(Material.FURNACE);
+			furnace.setFacing(BlockFace.NORTH);
+
+			apply(furnace, 7); // >6 only reverses stairs; a furnace is left untouched
+
+			assertThat(furnace.getFacing()).isEqualTo(BlockFace.NORTH);
+		}
+
+		@Test
+		@DisplayName("sets an orientable log axis to X (value % 3 == 0)")
+		void setsLogAxisX() {
+			Orientable log = (Orientable) server.createBlockData(Material.OAK_LOG);
+
+			apply(log, 0); // 0 % 3 == 0 -> X
+
+			assertThat(log.getAxis()).isEqualTo(org.bukkit.Axis.X);
+		}
+
+		@Test
+		@DisplayName("sets an orientable log axis to Y (value % 3 == 1)")
+		void setsLogAxisY() {
+			Orientable log = (Orientable) server.createBlockData(Material.OAK_LOG);
+			log.setAxis(org.bukkit.Axis.X); // start away from Y so the change is real (default is Y)
+
+			apply(log, 1); // 1 % 3 == 1 -> Y
+
+			assertThat(log.getAxis()).isEqualTo(org.bukkit.Axis.Y);
+		}
+
+		// note: the "axis not supported" branch (validAxes.contains == false) cannot be exercised under
+		// MockBukkit, which reports all three axes as valid for every Orientable (even nether portal);
+		// it is a real-server-only path.
+
+		@Test
+		@DisplayName("leaves a plain directional block unchanged when high bits carry no applicable property")
+		void ignoresHighBitsForPlainDirectional() {
+			Directional furnace = (Directional) server.createBlockData(Material.FURNACE);
+			furnace.setFacing(BlockFace.NORTH);
+
+			// value 16: facing index 0 (DOWN, invalid for a furnace) and the ==16 branch matches neither
+			// a comparator nor a bisected block, so nothing changes.
+			apply(furnace, 16);
+
+			assertThat(furnace.getFacing()).isEqualTo(BlockFace.NORTH);
+		}
 	}
 
 	/**
@@ -312,6 +421,33 @@ class BlockPlacementProtocolTest {
 		void innerRight() {
 			putStair(BlockFace.SOUTH, BlockFace.EAST);
 			assertThat(resolve()).isEqualTo(Stairs.Shape.INNER_RIGHT);
+		}
+
+		@Test
+		@DisplayName("stays straight when an opposing right neighbour cancels the outer-left corner")
+		void outerLeftSuppressedByOpposingNeighbour() {
+			putStair(BlockFace.NORTH, BlockFace.WEST); // would make OUTER_LEFT on its own
+			putStair(BlockFace.EAST, BlockFace.NORTH);  // ...but this right neighbour cancels it
+			assertThat(resolve()).isEqualTo(Stairs.Shape.STRAIGHT);
+		}
+
+		@Test
+		@DisplayName("stays straight when an opposing left neighbour cancels the inner-left corner")
+		void innerLeftSuppressedByOpposingNeighbour() {
+			putStair(BlockFace.SOUTH, BlockFace.WEST); // would make INNER_LEFT on its own
+			putStair(BlockFace.WEST, BlockFace.NORTH);  // ...but this left neighbour cancels it
+			assertThat(resolve()).isEqualTo(Stairs.Shape.STRAIGHT);
+		}
+
+		@Test
+		@DisplayName("does not connect to a neighbour in the other half")
+		void halfMismatchDoesNotConnect() {
+			Stairs topBack = (Stairs) server.createBlockData(Material.OAK_STAIRS);
+			topBack.setFacing(BlockFace.WEST);
+			topBack.setHalf(Bisected.Half.TOP); // target is BOTTOM, so the halves do not match
+			center().getRelative(BlockFace.NORTH).setBlockData(topBack);
+
+			assertThat(resolve()).isEqualTo(Stairs.Shape.STRAIGHT);
 		}
 	}
 
@@ -394,6 +530,49 @@ class BlockPlacementProtocolTest {
 			putChest(BlockFace.EAST);
 			Block clicked = center().getRelative(BlockFace.EAST);
 			assertThat(applyToCentre(clicked, false).getType()).isEqualTo(Chest.Type.LEFT);
+		}
+
+		@Test
+		@DisplayName("merges as RIGHT when clicked against a matching chest on the right")
+		void mergesRightFromClicked() {
+			putChest(BlockFace.WEST); // WEST is the right of a NORTH-facing chest
+			Block clicked = center().getRelative(BlockFace.WEST);
+			assertThat(applyToCentre(clicked, false).getType()).isEqualTo(Chest.Type.RIGHT);
+		}
+
+		@Test
+		@DisplayName("stays SINGLE when the clicked chest is already part of a double chest")
+		void staysSingleWhenClickedChestNotSingle() {
+			Chest leftChest = (Chest) server.createBlockData(Material.CHEST);
+			leftChest.setFacing(BlockFace.NORTH);
+			leftChest.setType(Chest.Type.LEFT);
+			center().getRelative(BlockFace.EAST).setBlockData(leftChest);
+
+			Block clicked = center().getRelative(BlockFace.EAST);
+			assertThat(applyToCentre(clicked, false).getType()).isEqualTo(Chest.Type.SINGLE);
+		}
+
+		@Test
+		@DisplayName("stays SINGLE when the clicked chest faces a different direction")
+		void staysSingleWhenClickedChestDifferentFacing() {
+			Chest sideways = northChest();
+			sideways.setFacing(BlockFace.SOUTH); // target faces NORTH, so facings do not match
+			center().getRelative(BlockFace.EAST).setBlockData(sideways);
+
+			Block clicked = center().getRelative(BlockFace.EAST);
+			assertThat(applyToCentre(clicked, false).getType()).isEqualTo(Chest.Type.SINGLE);
+		}
+
+		@Test
+		@DisplayName("stays SINGLE when the neighbouring chest is a different material")
+		void staysSingleWhenNeighbourDifferentMaterial() {
+			Chest trapped = (Chest) server.createBlockData(Material.TRAPPED_CHEST);
+			trapped.setFacing(BlockFace.NORTH);
+			trapped.setType(Chest.Type.SINGLE);
+			center().getRelative(BlockFace.EAST).setBlockData(trapped); // left of a NORTH-facing chest
+
+			// neighbour-scan path (placing, not clicking against it): material mismatch -> no merge
+			assertThat(applyToCentre(center(), false).getType()).isEqualTo(Chest.Type.SINGLE);
 		}
 	}
 }

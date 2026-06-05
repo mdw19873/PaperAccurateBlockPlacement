@@ -63,6 +63,32 @@ final class BlockPlacementProtocol {
 	}
 
 	/**
+	 * The decoded outcome of inspecting a placement packet's cursor X: the protocol value together
+	 * with which EasyPlace version produced it. Deliberately free of any transport (PacketEvents)
+	 * types so {@link #decodePlacement} can be unit-tested in isolation.
+	 */
+	record DecodedPlacement(int protocolValue, boolean v3) {
+	}
+
+	/**
+	 * Decodes a placement packet's block-relative cursor X, selecting the V2 or V3 scheme by
+	 * {@code v3Mode}, or returns {@code null} if the cursor carries no protocol value.
+	 *
+	 * <p>This is the single decision point the transport adapter delegates to: it folds the
+	 * {@link #carriesProtocol} gate and the mode-dependent {@link #decode}/{@link #decodeV3} choice
+	 * into one pure, testable call. The two wire formats are indistinguishable per-packet, so the
+	 * caller's cached mode is the only thing that disambiguates them.
+	 */
+	static DecodedPlacement decodePlacement(float cursorX, boolean v3Mode) {
+		if (!carriesProtocol(cursorX)) {
+			return null;
+		}
+		return v3Mode
+				? new DecodedPlacement(decodeV3(cursorX), true)
+				: new DecodedPlacement(decode(cursorX), false);
+	}
+
+	/**
 	 * Number of bits the V3 protocol uses to index a property with {@code valueCount} possible
 	 * values: {@code floorLog2(smallestEncompassingPowerOfTwo(valueCount))}, mirroring Minecraft's
 	 * {@code MathHelper}. Examples: 1&rarr;0, 2&rarr;1, 3&rarr;2, 4&rarr;2, 5..8&rarr;3.

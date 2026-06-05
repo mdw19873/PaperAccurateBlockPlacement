@@ -323,15 +323,14 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			// raw block-relative cursor float directly - exactly what Carpet encodes into.
 			float relativeX = cursor.getX();
 
-			if (BlockPlacementProtocol.carriesProtocol(relativeX)) {
-				boolean v3 = protocolV3;
-				int protocolValue = v3
-						? BlockPlacementProtocol.decodeV3(relativeX)
-						: BlockPlacementProtocol.decode(relativeX);
-
+			// fold the threshold gate and the V2/V3 mode selection into one testable domain call
+			BlockPlacementProtocol.DecodedPlacement decoded =
+					BlockPlacementProtocol.decodePlacement(relativeX, protocolV3);
+			if (decoded != null) {
 				UUID uuid = event.getUser().getUUID();
 				if (uuid != null) {
-					playerPacketDataHashMap.put(uuid, new PacketData(wrapper.getBlockPosition(), protocolValue, v3));
+					playerPacketDataHashMap.put(uuid,
+							new PacketData(wrapper.getBlockPosition(), decoded.protocolValue(), decoded.v3()));
 				}
 
 				// fix X to a valid in-block position (relative 0.5) and re-encode the packet
@@ -339,7 +338,8 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				event.markForReEncode(true);
 
 				if (debugEnabled) {
-					debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + protocolValue + ", v3=" + v3 + ")");
+					debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + decoded.protocolValue()
+							+ ", v3=" + decoded.v3() + ")");
 				}
 			}
 		} catch (Exception e) {

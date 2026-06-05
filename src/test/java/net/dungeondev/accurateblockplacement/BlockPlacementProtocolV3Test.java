@@ -130,6 +130,19 @@ class BlockPlacementProtocolV3Test {
 		}
 
 		@Test
+		@DisplayName("does not apply a property whose decoded index is out of range")
+		void outOfRangePropertyIndexIsSkipped() {
+			// no direction: reserved bit consumed, then prop p (3 values -> 2 bits). value 6 = 110:
+			// after consuming the reserved bit -> 11 (3), and index 3 >= valueCount 3, so p is skipped.
+			FakeProp p = new FakeProp("p", 3);
+			FakeStateModel model = new FakeStateModel(false, List.of(p));
+
+			protocol.applyV3(model, 6, BlockFace.NORTH);
+
+			assertThat(p.appliedIndex).isNull();
+		}
+
+		@Test
 		@DisplayName("facing index 6 (reverse) is passed through to the model")
 		void reverseFacing() {
 			// facingId 6 << 1 = 12; no properties
