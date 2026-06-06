@@ -152,6 +152,19 @@ class BlockPlacementProtocolV3Test {
 
 			assertThat(model.appliedFacingIndex).isEqualTo(6);
 		}
+
+		@Test
+		@DisplayName("applies orientation but emits nothing when debug is disabled")
+		void debugDisabledStillApplies() {
+			java.util.List<String> messages = new ArrayList<>();
+			BlockPlacementProtocol quiet = new BlockPlacementProtocol(messages::add, () -> false);
+			FakeStateModel model = new FakeStateModel(true, List.of());
+
+			quiet.applyV3(model, 12, BlockFace.NORTH); // facing index 6 (reverse)
+
+			assertThat(model.appliedFacingIndex).as("orientation still applied").isEqualTo(6);
+			assertThat(messages).as("no debug strings built or emitted").isEmpty();
+		}
 	}
 
 	// --- fakes ---

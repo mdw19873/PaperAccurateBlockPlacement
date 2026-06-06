@@ -23,6 +23,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -573,6 +575,57 @@ class BlockPlacementProtocolTest {
 
 			// neighbour-scan path (placing, not clicking against it): material mismatch -> no merge
 			assertThat(applyToCentre(center(), false).getType()).isEqualTo(Chest.Type.SINGLE);
+		}
+	}
+
+	/**
+	 * The debug guard must be behaviour-neutral: with debug disabled the orientation still applies and
+	 * no diagnostic strings are built/emitted (the hot-path allocation we are avoiding).
+	 */
+	@Nested
+	@DisplayName("debug gating")
+	class DebugGating {
+
+		private ServerMock server;
+		private World world;
+
+		@BeforeEach
+		void setUp() {
+			server = MockBukkit.mock();
+			world = server.addSimpleWorld("test");
+		}
+
+		@AfterEach
+		void tearDown() {
+			MockBukkit.unmock();
+		}
+
+		@Test
+		@DisplayName("applies orientation but emits nothing when debug is disabled")
+		void debugDisabledStillApplies() {
+			List<String> messages = new ArrayList<>();
+			BlockPlacementProtocol quiet = new BlockPlacementProtocol(messages::add, () -> false);
+			Directional furnace = (Directional) server.createBlockData(Material.FURNACE);
+			Block block = world.getBlockAt(0, 64, 0);
+
+			quiet.apply(furnace, 2, block, block, false); // index 2 == NORTH
+
+			assertThat(furnace.getFacing()).as("orientation still applied").isEqualTo(BlockFace.NORTH);
+			assertThat(messages).as("no debug strings built or emitted").isEmpty();
+		}
+
+		@Test
+		@DisplayName("emits diagnostics when debug is enabled")
+		void debugEnabledEmits() {
+			List<String> messages = new ArrayList<>();
+			BlockPlacementProtocol loud = new BlockPlacementProtocol(messages::add, () -> true);
+			Directional furnace = (Directional) server.createBlockData(Material.FURNACE);
+			Block block = world.getBlockAt(0, 64, 0);
+
+			loud.apply(furnace, 2, block, block, false);
+
+			assertThat(furnace.getFacing()).isEqualTo(BlockFace.NORTH);
+			assertThat(messages).isNotEmpty();
 		}
 	}
 }

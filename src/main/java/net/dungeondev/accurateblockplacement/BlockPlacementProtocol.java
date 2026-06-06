@@ -16,6 +16,7 @@ import org.bukkit.block.data.type.Stairs;
 
 import java.util.List;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -36,12 +37,23 @@ final class BlockPlacementProtocol {
 	static final float PROTOCOL_CURSOR_THRESHOLD = 2.0f;
 
 	private final Consumer<String> debug;
+	private final BooleanSupplier debugEnabled;
 
 	/**
 	 * @param debug sink for diagnostic messages (the caller decides whether/how to surface them)
 	 */
 	BlockPlacementProtocol(Consumer<String> debug) {
+		this(debug, () -> true);
+	}
+
+	/**
+	 * @param debug        sink for diagnostic messages
+	 * @param debugEnabled whether debug logging is active; checked before any message is built so the
+	 *                     placement hot path allocates no diagnostic strings when debug is off
+	 */
+	BlockPlacementProtocol(Consumer<String> debug, BooleanSupplier debugEnabled) {
 		this.debug = debug;
+		this.debugEnabled = debugEnabled;
 	}
 
 	/** True if the cursor X coordinate carries an encoded protocol value. */
@@ -152,38 +164,51 @@ final class BlockPlacementProtocol {
 	 * @param placerSneaking whether the placing player was sneaking (suppresses chest auto-merge)
 	 */
 	void apply(BlockData blockData, int protocolValue, Block block, Block clickedBlock, boolean placerSneaking) {
-		debug.accept("apply: material=" + blockData.getMaterial() + " protocol=" + protocolValue
-				+ " binary=" + Integer.toBinaryString(protocolValue));
+		final boolean dbg = debugEnabled.getAsBoolean();
+		if (dbg) {
+			debug.accept("apply: material=" + blockData.getMaterial() + " protocol=" + protocolValue
+					+ " binary=" + Integer.toBinaryString(protocolValue));
+		}
 
 		if (blockData instanceof Directional directional) {
 			int facingIndex = protocolValue & 0xF;
 			BlockFace currentFacing = directional.getFacing();
-			debug.accept("Directional: facingIndex=" + facingIndex + " currentFacing=" + currentFacing);
+			if (dbg) {
+				debug.accept("Directional: facingIndex=" + facingIndex + " currentFacing=" + currentFacing);
+			}
 
 			// handle directional block reversal: 6 for most blocks, >6 for stairs
 			if (facingIndex == 6) {
-				BlockFace newFacing = directional.getFacing().getOppositeFace();
+				BlockFace newFacing = currentFacing.getOppositeFace();
 				directional.setFacing(newFacing);
-				debug.accept("Reversed facing from " + currentFacing + " to " + newFacing);
+				if (dbg) {
+					debug.accept("Reversed facing from " + currentFacing + " to " + newFacing);
+				}
 			} else if (facingIndex <= 5) {
 				BlockFace face = facingFromIndex(facingIndex);
 				Set<BlockFace> validFaces = directional.getFaces();
-				debug.accept("Trying to set facing to " + face + " valid="
-						+ (face != null ? validFaces.contains(face) : "null"));
+				if (dbg) {
+					debug.accept("Trying to set facing to " + face + " valid="
+							+ (face != null ? validFaces.contains(face) : "null"));
+				}
 
 				if (face != null && validFaces.contains(face)) {
 					directional.setFacing(face);
-					debug.accept("Set facing to " + face);
-
-					if (face == BlockFace.UP || face == BlockFace.DOWN) {
-						debug.accept("Set vertical facing: " + blockData.getMaterial() + " to " + face);
+					if (dbg) {
+						debug.accept("Set facing to " + face);
+						if (face == BlockFace.UP || face == BlockFace.DOWN) {
+							debug.accept("Set vertical facing: " + blockData.getMaterial() + " to " + face);
+						}
 					}
 				}
 			} else if (blockData instanceof Stairs && facingIndex > 6) {
 				// for higher indices stairs try reversing
-				BlockFace newFacing = directional.getFacing().getOppositeFace();
+				BlockFace newFacing = currentFacing.getOppositeFace();
 				directional.setFacing(newFacing);
-				debug.accept("Stairs special reverse: " + facingIndex + " from " + currentFacing + " to " + newFacing);
+				if (dbg) {
+					debug.accept("Stairs special reverse: " + facingIndex + " from " + currentFacing + " to "
+							+ newFacing);
+				}
 			}
 
 			// chest merging
@@ -225,7 +250,9 @@ final class BlockPlacementProtocol {
 			};
 			if (axis != null && validAxes.contains(axis)) {
 				orientable.setAxis(axis);
-				debug.accept("Set axis to " + axis);
+				if (dbg) {
+					debug.accept("Set axis to " + axis);
+				}
 			}
 		}
 
@@ -236,15 +263,21 @@ final class BlockPlacementProtocol {
 				int delay = protocolValue / 16;
 				if (delay >= repeater.getMinimumDelay() && delay <= repeater.getMaximumDelay()) {
 					repeater.setDelay(delay);
-					debug.accept("Set repeater delay to " + delay);
+					if (dbg) {
+						debug.accept("Set repeater delay to " + delay);
+					}
 				}
 			} else if (protocolValue == 16) {
 				if (blockData instanceof Comparator comparator) {
 					comparator.setMode(Comparator.Mode.SUBTRACT);
-					debug.accept("Set comparator to subtract mode");
+					if (dbg) {
+						debug.accept("Set comparator to subtract mode");
+					}
 				} else if (blockData instanceof Bisected bisected) {
 					bisected.setHalf(Bisected.Half.TOP);
-					debug.accept("Set bisected half to TOP");
+					if (dbg) {
+						debug.accept("Set bisected half to TOP");
+					}
 				}
 			}
 		}
@@ -265,7 +298,9 @@ final class BlockPlacementProtocol {
 	 * @param playerFacing  the placing player's horizontal facing (for the direction fallback)
 	 */
 	void applyV3(StateModel model, int protocolValue, BlockFace playerFacing) {
-		debug.accept("applyV3: protocol=" + protocolValue + " binary=" + Integer.toBinaryString(protocolValue));
+		if (debugEnabled.getAsBoolean()) {
+			debug.accept("applyV3: protocol=" + protocolValue + " binary=" + Integer.toBinaryString(protocolValue));
+		}
 
 		if (protocolValue < 0) {
 			return; // no orientation requested

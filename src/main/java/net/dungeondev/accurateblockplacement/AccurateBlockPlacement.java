@@ -95,7 +95,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		saveDefaultConfig();
 		config = getConfig();
 		refreshConfigCache();
-		protocol = new BlockPlacementProtocol(this::debug);
+		protocol = new BlockPlacementProtocol(this::debug, () -> debugEnabled);
 
 		getLogger().info("PaperAccurateBlockPlacement loaded!");
 
@@ -353,13 +353,14 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	}
 
 	private void onCustomPayload(final PacketReceiveEvent event) {
+		// V3 mode does not speak the Carpet handshake (see onPlayerJoin), so bail before allocating a
+		// wrapper to read the channel - this runs for every plugin-message packet.
+		if (protocolV3) {
+			return;
+		}
 		try {
 			WrapperPlayClientPluginMessage in = new WrapperPlayClientPluginMessage(event);
 			if (!CarpetPayloads.CHANNEL.equals(in.getChannelName())) {
-				return;
-			}
-			// V3 mode does not speak the Carpet handshake (see onPlayerJoin).
-			if (protocolV3) {
 				return;
 			}
 			// answer the handshake only once per player; carpetGreeted.add() is true only the

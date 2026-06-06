@@ -12,7 +12,9 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -146,6 +148,14 @@ final class NmsStateModel implements BlockPlacementProtocol.StateModel {
 		WHITELIST = whitelist;
 	}
 
+	/**
+	 * Per-block-type cache of the resolved property table. The whitelist filtering, direction-property
+	 * lookup and value sorting depend only on the block type (the NMS {@code Block} singleton), not the
+	 * specific state, so they are computed once per type instead of on every placement. Keyed by the
+	 * NMS {@code Block} instance (identity); bounded by the number of distinct block types.
+	 */
+	private static final Map<Object, BlockDef> DEF_CACHE = new ConcurrentHashMap<>();
+
 	/** True if the NMS reflection handles resolved, so V3 decoding can run. */
 	static boolean isAvailable() {
 		return AVAILABLE;
@@ -153,24 +163,21 @@ final class NmsStateModel implements BlockPlacementProtocol.StateModel {
 
 	private final Block block;
 	private final Consumer<String> debug;
+	private final BlockDef def;           // cached, block-type-invariant property table
 	private Object state;                 // current NMS BlockState (immutable; re-assigned on change)
-	private final Object directionProp;   // first non-vertical direction Property, or null
-	private final Collection<?> directionValues; // possible values of directionProp, or null
-	private final List<Prop> props;       // whitelisted non-direction props, sorted by name
 
-	private NmsStateModel(Block block, Consumer<String> debug, Object state, Object directionProp,
-			Collection<?> directionValues, List<Prop> props) {
+	private NmsStateModel(Block block, Consumer<String> debug, BlockDef def, Object state) {
 		this.block = block;
 		this.debug = debug;
+		this.def = def;
 		this.state = state;
-		this.directionProp = directionProp;
-		this.directionValues = directionValues;
-		this.props = props;
 	}
 
 	/**
 	 * Builds a model for the block's current data, or {@code null} if reflection is unavailable or the
-	 * block data is not a {@code CraftBlockData} (so the caller can fall back / skip).
+	 * block data is not a {@code CraftBlockData} (so the caller can fall back / skip). The property
+	 * table is resolved once per block type and cached in {@link #DEF_CACHE}; only the live state is
+	 * read per call.
 	 */
 	static NmsStateModel create(Block block, Consumer<String> debug) {
 		if (!AVAILABLE) {
@@ -183,73 +190,89 @@ final class NmsStateModel implements BlockPlacementProtocol.StateModel {
 			}
 			Object state = CBD_GET_STATE.invoke(data);
 			Object nmsBlock = BS_GET_BLOCK.invoke(state);
-			Object stateDef = BLOCK_GET_STATEDEF.invoke(nmsBlock);
-			Collection<?> properties = (Collection<?>) SD_GET_PROPERTIES.invoke(stateDef);
-
-			// first direction-valued property in the (name-sorted) state definition; excluded if it
-			// is vertical_direction (pointed dripstone), matching applyPlacementProtocolV3.
-			Object firstDirection = null;
-			for (Object p : properties) {
-				if (PROP_GET_VALUECLASS.invoke(p) == DIRECTION_CLASS) {
-					firstDirection = p;
-					break;
-				}
+			BlockDef def = DEF_CACHE.get(nmsBlock);
+			if (def == null) {
+				def = buildDef(nmsBlock); // throws on reflection failure -> caught below -> null
+				DEF_CACHE.putIfAbsent(nmsBlock, def);
 			}
-			Object directionProp = null;
-			Collection<?> directionValues = null;
-			if (firstDirection != null
-					&& !"vertical_direction".equals(PROP_GET_NAME.invoke(firstDirection))) {
-				directionProp = firstDirection;
-				directionValues = (Collection<?>) PROP_GET_VALUES.invoke(directionProp);
-			}
-
-			NmsStateModel model = new NmsStateModel(block, debug, state, directionProp, directionValues,
-					new ArrayList<>());
-			for (Object p : properties) {
-				if (PROP_GET_VALUECLASS.invoke(p) == DIRECTION_CLASS) {
-					continue; // direction props are handled separately and skipped by the loop
-				}
-				if (!WHITELIST.contains(p)) {
-					continue;
-				}
-				model.props.add(model.new NmsProp(p));
-			}
-			model.props.sort(Comparator.comparing(prop -> ((NmsProp) prop).name));
-			return model;
+			return new NmsStateModel(block, debug, def, state);
 		} catch (Throwable t) {
 			debug.accept("V3 NMS model unavailable: " + t);
 			return null;
 		}
 	}
 
+	/**
+	 * Resolves the whitelisted property table for a block type in a single pass over its state
+	 * definition. The first direction-valued property becomes the direction property unless it is
+	 * {@code vertical_direction} (pointed dripstone), matching Litematica's
+	 * {@code applyPlacementProtocolV3} - if the first direction property is vertical there is no usable
+	 * direction property (we do not fall back to a later one). Remaining whitelisted non-direction
+	 * properties are collected with their values pre-sorted the way the client sorts them, then ordered
+	 * by property name.
+	 */
+	@SuppressWarnings({ "unchecked", "rawtypes" })
+	private static BlockDef buildDef(Object nmsBlock) throws Exception {
+		Object stateDef = BLOCK_GET_STATEDEF.invoke(nmsBlock);
+		Collection<?> properties = (Collection<?>) SD_GET_PROPERTIES.invoke(stateDef);
+
+		Object directionProp = null;
+		List<Object> directionValues = null;
+		boolean sawFirstDirection = false;
+		List<PropDef> props = new ArrayList<>();
+
+		for (Object p : properties) {
+			if (PROP_GET_VALUECLASS.invoke(p) == DIRECTION_CLASS) {
+				if (!sawFirstDirection) {
+					sawFirstDirection = true;
+					if (!"vertical_direction".equals(PROP_GET_NAME.invoke(p))) {
+						directionProp = p;
+						directionValues = new ArrayList<>((Collection<?>) PROP_GET_VALUES.invoke(p));
+					}
+				}
+				continue; // direction properties are never part of the non-direction loop
+			}
+			if (!WHITELIST.contains(p)) {
+				continue;
+			}
+			String name = (String) PROP_GET_NAME.invoke(p);
+			List<Object> values = new ArrayList<>((Collection<?>) PROP_GET_VALUES.invoke(p));
+			values.sort((a, b) -> ((Comparable) a).compareTo(b));
+			props.add(new PropDef(p, name, values));
+		}
+		props.sort(Comparator.comparing(pd -> pd.name));
+		return new BlockDef(directionProp, directionValues, props);
+	}
+
 	@Override
 	public boolean hasDirectionProperty() {
-		return directionProp != null;
+		return def.directionProp != null;
 	}
 
 	@Override
 	public void applyDirection(int facingIndex, BlockFace playerFacing) {
-		if (directionProp == null) {
+		if (def.directionProp == null) {
 			return;
 		}
 		try {
-			Object currentFacing = BS_GET_VALUE.invoke(state, directionProp);
+			Object currentFacing = BS_GET_VALUE.invoke(state, def.directionProp);
 			Object newFacing;
 			if (facingIndex == 6) {
 				newFacing = DIR_GET_OPPOSITE.invoke(currentFacing);
 			} else if (facingIndex >= 0 && facingIndex <= 5) {
 				newFacing = DIR_FROM_3D.invoke(null, facingIndex);
-				if (!directionValues.contains(newFacing)) {
+				if (!def.directionValues.contains(newFacing)) {
 					newFacing = toNmsDirection(playerFacing != null ? playerFacing.getOppositeFace() : null);
 				}
 			} else {
 				return; // out of range -> leave facing unchanged
 			}
 
-			if (newFacing == null || newFacing.equals(currentFacing) || !directionValues.contains(newFacing)) {
+			if (newFacing == null || newFacing.equals(currentFacing)
+					|| !def.directionValues.contains(newFacing)) {
 				return;
 			}
-			Object candidate = BS_SET_VALUE.invoke(state, directionProp, newFacing);
+			Object candidate = BS_SET_VALUE.invoke(state, def.directionProp, newFacing);
 			commitIfPlaceable(candidate);
 		} catch (Throwable t) {
 			debug.accept("V3 direction apply failed: " + t);
@@ -258,7 +281,12 @@ final class NmsStateModel implements BlockPlacementProtocol.StateModel {
 
 	@Override
 	public List<Prop> sortedProperties() {
-		return props;
+		// bind the cached property descriptors to this placement's mutable state
+		List<Prop> wrappers = new ArrayList<>(def.props.size());
+		for (PropDef pd : def.props) {
+			wrappers.add(new NmsProp(pd));
+		}
+		return wrappers;
 	}
 
 	@Override
@@ -293,50 +321,75 @@ final class NmsStateModel implements BlockPlacementProtocol.StateModel {
 		if (face == null) {
 			return null;
 		}
-		try {
-			return Enum.valueOf((Class<? extends Enum>) DIRECTION_CLASS.asSubclass(Enum.class), face.name());
-		} catch (IllegalArgumentException e) {
-			return null; // non-cardinal face (e.g. NORTH_EAST) has no Direction equivalent
-		}
+		// only the six cardinal/vertical faces have a Direction equivalent; pre-check instead of
+		// catching IllegalArgumentException from Enum.valueOf so the common path throws nothing.
+		return switch (face) {
+			case NORTH, EAST, SOUTH, WEST, UP, DOWN ->
+				Enum.valueOf((Class<? extends Enum>) DIRECTION_CLASS.asSubclass(Enum.class), face.name());
+			default -> null; // non-cardinal face (e.g. NORTH_EAST) has no Direction equivalent
+		};
 	}
 
-	/** A whitelisted, non-direction property, with its values pre-sorted to match the client. */
+	/**
+	 * A whitelisted non-direction property bound to the current state. The property and its
+	 * client-sorted values come from the cached {@link PropDef}; only the per-placement state mutation
+	 * happens here.
+	 */
 	private final class NmsProp implements Prop {
-		private final Object property;
-		private final String name;
-		private final List<Object> values;
+		private final PropDef prop;
 
-		@SuppressWarnings({ "unchecked", "rawtypes" })
-		private NmsProp(Object property) throws Exception {
-			this.property = property;
-			this.name = (String) PROP_GET_NAME.invoke(property);
-			List<Object> sorted = new ArrayList<>((Collection<?>) PROP_GET_VALUES.invoke(property));
-			sorted.sort((a, b) -> ((Comparable) a).compareTo(b));
-			this.values = sorted;
+		private NmsProp(PropDef prop) {
+			this.prop = prop;
 		}
 
 		@Override
 		public int valueCount() {
-			return values.size();
+			return prop.values.size();
 		}
 
 		@Override
 		public void trySetIndex(int index) {
 			try {
-				Object value = values.get(index);
+				Object value = prop.values.get(index);
 				// never force a double slab via the protocol (would duplicate the slab item)
 				if (value instanceof Enum<?> e && "DOUBLE".equals(e.name())) {
 					return;
 				}
-				Object current = BS_GET_VALUE.invoke(state, property);
+				Object current = BS_GET_VALUE.invoke(state, prop.property);
 				if (value.equals(current)) {
 					return;
 				}
-				Object candidate = BS_SET_VALUE.invoke(state, property, value);
+				Object candidate = BS_SET_VALUE.invoke(state, prop.property, value);
 				commitIfPlaceable(candidate);
 			} catch (Throwable t) {
-				debug.accept("V3 property apply failed for " + name + ": " + t);
+				debug.accept("V3 property apply failed for " + prop.name + ": " + t);
 			}
+		}
+	}
+
+	/** Block-type-invariant property table, resolved once per block type and cached in {@link #DEF_CACHE}. */
+	private static final class BlockDef {
+		private final Object directionProp;          // first usable direction Property, or null
+		private final List<Object> directionValues;  // possible values of directionProp, or null
+		private final List<PropDef> props;           // whitelisted non-direction props, sorted by name
+
+		private BlockDef(Object directionProp, List<Object> directionValues, List<PropDef> props) {
+			this.directionProp = directionProp;
+			this.directionValues = directionValues;
+			this.props = props;
+		}
+	}
+
+	/** A whitelisted non-direction property and its values, pre-sorted to match the client order. */
+	private static final class PropDef {
+		private final Object property;
+		private final String name;
+		private final List<Object> values;
+
+		private PropDef(Object property, String name, List<Object> values) {
+			this.property = property;
+			this.name = name;
+			this.values = values;
 		}
 	}
 }
