@@ -2,7 +2,17 @@
 # https://github.com/hxrry27/PaperAccurateBlockPlacement
 
 # don't change this!
-config-version: 1
+config-version: 2
+
+# Litematica EasyPlace protocol to decode.
+#   v2 - Carpet's accurate block placement (default). Works with Litematica easyPlace "Version 2"
+#        or "Auto" (the server announces itself via carpet:hello), and Tweakeroo FlexibleBlockPlacement.
+#   v3 - Litematica's newer, more complete protocol (orients buttons, levers, hoppers, crafters,
+#        rails, doors, note blocks, etc.). The wire format is indistinguishable from v2 per-packet,
+#        so this is a server-wide switch: in v3 mode the server stops advertising carpet:hello and
+#        you must set Litematica's easyPlaceProtocol to "Version 3" MANUALLY on the client.
+#        Tweakeroo and Carpet/Auto clients do NOT orient correctly while v3 is active.
+easyplace-protocol: v2
 
 # air placement settings
 # these settings control which blocks can be placed in mid-air when using the accurate block protocol

@@ -48,6 +48,9 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	// re-parsing them out of the FileConfiguration each time (refreshed on reload).
 	private volatile boolean debugEnabled;
 	private volatile boolean candlesAirPlaceable;
+	// when true, decode placements with the EasyPlace V3 scheme instead of V2 (Carpet). The two wire
+	// formats are indistinguishable per-packet, so this is a server-wide switch (see config.yml).
+	private volatile boolean protocolV3;
 
 	private BlockPlacementProtocol protocol;
 
@@ -92,7 +95,7 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		saveDefaultConfig();
 		config = getConfig();
 		refreshConfigCache();
-		protocol = new BlockPlacementProtocol(this::debug);
+		protocol = new BlockPlacementProtocol(this::debug, () -> debugEnabled);
 
 		getLogger().info("PaperAccurateBlockPlacement loaded!");
 
@@ -112,6 +115,14 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	private void refreshConfigCache() {
 		debugEnabled = config.getBoolean("debug", false);
 		candlesAirPlaceable = config.getBoolean("air-placement.candles", false);
+
+		boolean wantV3 = "v3".equalsIgnoreCase(config.getString("easyplace-protocol", "v2"));
+		if (wantV3 && !NmsStateModel.isAvailable()) {
+			getLogger().warning("easyplace-protocol is set to v3 but the NMS block-state handles could "
+					+ "not be resolved on this server; falling back to v2.");
+			wantV3 = false;
+		}
+		protocolV3 = wantV3;
 	}
 
 	private boolean isAirPlaceableBlock(Material material) {
@@ -149,6 +160,11 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 
 	@EventHandler
 	public void onPlayerJoin(PlayerJoinEvent event) {
+		// In V3 mode we must NOT advertise carpet:hello, or AUTO-mode Litematica clients would resolve
+		// to V2 and send V2-encoded packets that the V3 decoder mis-reads. V3 users select it manually.
+		if (protocolV3) {
+			return;
+		}
 		sendCarpetHello(event.getPlayer());
 	}
 
@@ -187,17 +203,26 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 		}
 
 		if (isAirPlaceableBlock(block.getType())) {
-			handleAirPlacement(event, packetData.protocolValue());
+			if (packetData.v3()) {
+				handleAirPlacementV3(event, packetData.protocolValue());
+			} else {
+				handleAirPlacement(event, packetData.protocolValue());
+			}
 			playerPacketDataHashMap.remove(player.getUniqueId());
 			return;
 		}
 
 		if (debugEnabled) {
-			debug("Accurate placement: " + block.getType() + " protocol=" + packetData.protocolValue() + " at "
-					+ block.getLocation() + " clicked: " + event.getBlockAgainst().getFace(block));
+			debug("Accurate placement: " + block.getType() + " protocol=" + packetData.protocolValue() + " v3="
+					+ packetData.v3() + " at " + block.getLocation() + " clicked: "
+					+ event.getBlockAgainst().getFace(block));
 		}
 
-		accurateBlockProtocol(event, packetData.protocolValue());
+		if (packetData.v3()) {
+			accurateBlockProtocolV3(event, packetData.protocolValue());
+		} else {
+			accurateBlockProtocol(event, packetData.protocolValue());
+		}
 		playerPacketDataHashMap.remove(player.getUniqueId());
 	}
 
@@ -223,6 +248,47 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			scheduleApply(block, blockData);
 		} else {
 			event.setCancelled(true);
+		}
+	}
+
+	// EasyPlace V3: generic state-property orientation via the NMS-backed model. No per-block
+	// special-casing is needed - V3 transmits chest type, stair shape, etc. explicitly.
+	private void accurateBlockProtocolV3(BlockPlaceEvent event, int protocolValue) {
+		Block block = event.getBlock();
+		if (block.getBlockData() instanceof Bed) {
+			return; // let vanilla handle beds (two-block placement)
+		}
+
+		NmsStateModel model = NmsStateModel.create(block, this::debug);
+		if (model == null) {
+			debug("V3 model unavailable for " + block.getType() + "; leaving vanilla placement");
+			return;
+		}
+
+		protocol.applyV3(model, protocolValue, event.getPlayer().getFacing());
+		BlockData blockData = model.result();
+		if (blockData == null) {
+			return;
+		}
+
+		if (block.canPlace(blockData)) {
+			scheduleApply(block, blockData);
+		} else {
+			event.setCancelled(true);
+		}
+	}
+
+	// V3 air placement (candles): apply orientation and force the placement, bypassing canPlace.
+	private void handleAirPlacementV3(BlockPlaceEvent event, int protocolValue) {
+		Block block = event.getBlock();
+		NmsStateModel model = NmsStateModel.create(block, this::debug);
+		if (model == null) {
+			return;
+		}
+		protocol.applyV3(model, protocolValue, event.getPlayer().getFacing());
+		BlockData blockData = model.result();
+		if (blockData != null) {
+			scheduleApply(block, blockData);
 		}
 	}
 
@@ -257,12 +323,14 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 			// raw block-relative cursor float directly - exactly what Carpet encodes into.
 			float relativeX = cursor.getX();
 
-			if (BlockPlacementProtocol.carriesProtocol(relativeX)) {
-				int protocolValue = BlockPlacementProtocol.decode(relativeX);
-
+			// fold the threshold gate and the V2/V3 mode selection into one testable domain call
+			BlockPlacementProtocol.DecodedPlacement decoded =
+					BlockPlacementProtocol.decodePlacement(relativeX, protocolV3);
+			if (decoded != null) {
 				UUID uuid = event.getUser().getUUID();
 				if (uuid != null) {
-					playerPacketDataHashMap.put(uuid, new PacketData(wrapper.getBlockPosition(), protocolValue));
+					playerPacketDataHashMap.put(uuid,
+							new PacketData(wrapper.getBlockPosition(), decoded.protocolValue(), decoded.v3()));
 				}
 
 				// fix X to a valid in-block position (relative 0.5) and re-encode the packet
@@ -270,7 +338,8 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 				event.markForReEncode(true);
 
 				if (debugEnabled) {
-					debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + protocolValue + ")");
+					debug("Fixed X from " + relativeX + " to 0.5 (protocol=" + decoded.protocolValue()
+							+ ", v3=" + decoded.v3() + ")");
 				}
 			}
 		} catch (Exception e) {
@@ -284,6 +353,11 @@ public class AccurateBlockPlacement extends JavaPlugin implements Listener {
 	}
 
 	private void onCustomPayload(final PacketReceiveEvent event) {
+		// V3 mode does not speak the Carpet handshake (see onPlayerJoin), so bail before allocating a
+		// wrapper to read the channel - this runs for every plugin-message packet.
+		if (protocolV3) {
+			return;
+		}
 		try {
 			WrapperPlayClientPluginMessage in = new WrapperPlayClientPluginMessage(event);
 			if (!CarpetPayloads.CHANNEL.equals(in.getChannelName())) {
