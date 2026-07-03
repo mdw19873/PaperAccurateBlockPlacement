@@ -17,10 +17,10 @@ dependencies {
     // oldest server we target. PacketEvents handles the protocol across the whole 1.21 -> 26.1 range
     // at runtime, and a plugin built against 1.21 still loads on newer servers.
     compileOnly 'io.papermc.paper:paper-api:1.21-R0.1-SNAPSHOT'
-    compileOnly 'com.github.retrooper:packetevents-spigot:2.12.2'
+    compileOnly 'com.github.retrooper:packetevents-spigot:2.13.0'
 
     // --- testing stack (latest stable supporting Java 21+ / Paper) ---
-    testImplementation platform('org.junit:junit-bom:6.1.0')
+    testImplementation platform('org.junit:junit-bom:6.1.1')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'org.assertj:assertj-core:3.27.7'
