@@ -9,8 +9,11 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    # Labels must already exist in the repository - Dependabot silently drops any
+    # it cannot find and does NOT create them when `labels` is set explicitly.
     labels:
       - "dependencies"
+      - "gradle"
     commit-message:
       prefix: "build"
       include: "scope"
@@ -36,6 +39,7 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+      - "github-actions"
     commit-message:
       prefix: "ci"
     # Action bumps are usually safe together, so collapse them into a single PR.
@@ -43,3 +47,13 @@ updates:
       github-actions:
         patterns:
           - "*"
+    ignore:
+      # ci.yml pins actions to floating major tags (@v6, @v7), which upstream moves
+      # to each new release - so minor/patch bumps are already picked up without a
+      # PR. Left unfiltered, Dependabot rewrites those tags to exact versions
+      # (e.g. gradle/actions@v6 -> @v6.2.0), which freezes CI on an older commit
+      # than the one @v6 already resolves to. Only major bumps need a PR.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
