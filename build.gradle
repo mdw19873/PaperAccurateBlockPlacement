@@ -17,18 +17,18 @@ dependencies {
     // oldest server we target. PacketEvents handles the protocol across the whole 1.21 -> 26.1 range
     // at runtime, and a plugin built against 1.21 still loads on newer servers.
     compileOnly 'io.papermc.paper:paper-api:1.21-R0.1-SNAPSHOT'
-    compileOnly 'com.github.retrooper:packetevents-spigot:2.13.0'
+    compileOnly 'com.github.retrooper:packetevents-spigot:2.14.0'
 
     // --- testing stack (latest stable supporting Java 21+ / Paper) ---
-    testImplementation platform('org.junit:junit-bom:6.1.2')
+    testImplementation platform('org.junit:junit-bom:6.1.3')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'org.assertj:assertj-core:3.27.7'
-    testImplementation 'org.mockito:mockito-core:5.23.0'
+    testImplementation 'org.mockito:mockito-core:5.24.0'
     // MockBukkit's v1.21 module is Java 21-compatible, so the same suite runs on both Java 21 and 25
     // in CI. It downloads the real Paper server at runtime; paper-api is still needed on the test
     // classpath for compilation (pinned within the 1.21 line that this module targets).
-    testImplementation 'org.mockbukkit.mockbukkit:mockbukkit-v1.21:4.110.0'
+    testImplementation 'org.mockbukkit.mockbukkit:mockbukkit-v1.21:4.116.3'
     testImplementation 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
 }
 
